@@ -127,6 +127,6 @@ npm test
 
 Tests exercise configuration inheritance, concurrent persistence, Git worktrees, native-compaction ownership, real SDK requests and tool continuations, failure handling (including with native retry enabled), manual compaction, reload, session copying, and corrupt-config recovery. Actual CLI tests cover RPC, local/Git-source installation, persistent deactivation, and uninstall restoration. They use temporary directories and fake/local providers, without sending paid model requests or touching your normal pi configuration.
 
-The extension is written for pi's supported platforms. Runtime behavior and actual TUI interactions have been checked on macOS; Linux and Windows have not been exercised here. The compatibility bridge is restricted to pi 1.3.x because its lifecycle integration uses exported SDK class methods beyond the ordinary ExtensionAPI. See [implementation notes](docs/implementation.md) and the [requirements](docs/requirements.md).
+GitHub Actions has verified type checking and the automated suite on macOS, Linux, and Windows with Node.js 22.19.0 and pi 1.3.0. Interactive TUI behavior has been checked on macOS; interactive Linux and Windows TUI sessions have not been manually exercised. The compatibility bridge is restricted to pi 1.3.x because its lifecycle integration uses exported SDK class methods beyond the ordinary ExtensionAPI. See [implementation notes](docs/implementation.md) and the [requirements](docs/requirements.md).
 
 MIT licensed. See [LICENSE](LICENSE).
