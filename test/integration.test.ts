@@ -84,6 +84,21 @@ test("reload refreshes the snapshot and rebinds a single gate to the same SDK se
   } finally { await f.close(); }
 });
 
+test("unknown model capacity does not fail startup; selecting a known model restores the footer", async () => {
+  const f = await fixture({ mode: "tui", unknownCapacity: true });
+  try {
+    assert.equal(f.session.model?.contextWindow, 0);
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.controller.active, true);
+    assert.equal(f.statuses.get("compactor"), undefined);
+    assert.ok(f.notices.some(message => message.includes("capacity is unavailable")));
+    await f.session.setModel({ ...f.session.model!, id: "known-capacity", contextWindow: 200_000 });
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.statuses.get("compactor"), "Compact at 15%");
+    assert.equal(f.calls.length, 0);
+  } finally { await f.close(); }
+});
+
 test("TUI refusing a corrupt-config reset disables the whole plugin until explicitly enabled", async () => {
   const f = await fixture({ corrupt: true, mode: "tui", reset: false });
   try {

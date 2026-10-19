@@ -9,7 +9,7 @@ import { ConfigStore } from "../src/storage.ts";
 export function response(text = "OK"): AssistantMessage {
   return { role: "assistant", api: "openai-completions", provider: "compactor-test", model: "model", timestamp: Date.now(), stopReason: "stop", content: [{ type: "text", text }], usage: { input: 100, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 101, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
-export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean } = {}) {
+export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "compactor-sdk-"));
   const store = new ConfigStore(root);
   await store.update(c => { c.global.all = { trigger: { unit: "tokens", value: 30_000 }, target: { unit: "tokens", value: 5_000 } }; c.automatic = options.automatic ?? true; });
@@ -46,7 +46,7 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, systemPrompt: "Test system", noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [factory] });
   await loader.reload();
   const manager = SessionManager.inMemory(root);
-  const { session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model: runtime.getModel("compactor-test", "model"), settingsManager: settings, sessionManager: manager, resourceLoader: loader, noTools: options.tool ? "builtin" : "all" });
+  const { session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model: options.unknownCapacity ? { ...runtime.getModel("compactor-test", "model")!, contextWindow: 0 } : runtime.getModel("compactor-test", "model"), settingsManager: settings, sessionManager: manager, resourceLoader: loader, noTools: options.tool ? "builtin" : "all" });
   const errors: string[] = [];
   const notices: string[] = [];
   const statuses = new Map<string, string | undefined>();

@@ -148,14 +148,14 @@ export class Compactor {
   updateStatus(current?: number): void {
     const ctx = this.context;
     if (!ctx || ctx.mode !== "tui") return;
-    if (!this.active || !ctx.model || this.startupError) { ctx.ui.setStatus("compactor", undefined); return; }
+    if (!this.active || !ctx.model || !(ctx.model.contextWindow > 0) || this.startupError) { ctx.ui.setStatus("compactor", undefined); return; }
     const status = footer(this.configuration, this.effective(), ctx.model.contextWindow, current ?? ctx.getContextUsage()?.tokens ?? null);
     ctx.ui.setStatus("compactor", status ? ctx.ui.theme.style(status.text, { fg: status.color === "dim" ? "dim" : parseColor(status.color) }) : undefined);
   }
   warn(): void {
     if (!this.context?.model) return;
-    const effective = this.effective();
-    const warning = [effective.invalid, effective.warning].filter(Boolean).join(" ") || undefined;
+    const effective = this.context.model.contextWindow > 0 ? this.effective() : undefined;
+    const warning = effective ? [effective.invalid, effective.warning].filter(Boolean).join(" ") || undefined : "The selected model's context capacity is unavailable. Select a model with a known capacity to preview compaction settings.";
     const key = `${this.context.sessionManager.getSessionId()}/${this.context.model.provider}/${this.context.model.id}/${warning}`;
     if (warning && key !== this.lastWarning) report(this.context, warning, "warning");
     this.lastWarning = key;

@@ -88,8 +88,9 @@ export async function openPanel(c: Compactor, ctx: ExtensionCommandContext): Pro
   if (!c.active) { report(ctx, "Compactor is disabled. Use /compactor enable to re-enable it.", "warning"); return; }
   if (ctx.mode !== "tui") throw new Error("/compactor's panel requires the pi TUI. Saved rules still apply in this mode.");
   let model = ctx.model;
-  if (!model) model = await chooseModel(c, ctx);
+  if (!model || !(model.contextWindow > 0)) model = await chooseModel(c, ctx);
   if (!model) return;
+  if (!(model.contextWindow > 0)) throw new Error("Select a model with a known context capacity to preview and edit compaction settings.");
   let last = "trigger";
   while (c.active) {
     const effective = c.effective(model);
