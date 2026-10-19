@@ -9,7 +9,7 @@ import { ConfigStore } from "../src/storage.ts";
 export function response(text = "OK"): AssistantMessage {
   return { role: "assistant", api: "openai-completions", provider: "compactor-test", model: "model", timestamp: Date.now(), stopReason: "stop", content: [{ type: "text", text }], usage: { input: 100, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 101, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
-export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean } = {}) {
+export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean; installOnReload?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "compactor-sdk-"));
   const store = new ConfigStore(root);
   await store.update(c => { c.global.all = { trigger: { unit: "tokens", value: 30_000 }, target: { unit: "tokens", value: 5_000 } }; c.automatic = options.automatic ?? true; });
@@ -32,7 +32,9 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
     },
   });
   let controller!: Compactor;
+  let installed = !options.installOnReload;
   const factory = (pi: ExtensionAPI) => {
+    if (!installed) return;
     controller = new Compactor(pi, root);
     pi.registerCommand("compactor", { handler: async () => {} });
     pi.on("session_start", (event, ctx) => controller.start(event, ctx));
@@ -53,6 +55,7 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
   const ui = { confirm: async () => options.reset ?? false, notify: (message: string) => notices.push(message), setStatus: (key: string, text: string | undefined) => statuses.set(key, text), theme: { style: (text: string) => text } } as unknown as ExtensionUIContext;
   await session.bindExtensions({ mode: options.mode ?? "print", ...(options.mode === "tui" ? { uiContext: ui } : {}), onError: error => errors.push(error.error) });
   return { root, store, runtime, calls, session, manager, get controller() { return controller; }, errors, notices, statuses,
+    async install() { installed = true; await session.reload(); },
     seed() {
       manager.appendMessage({ role: "user", content: "Earlier conversation. ".repeat(12_000), timestamp: 1 });
       const assistant = response("Previous response."); assistant.timestamp = 2; assistant.usage.input = 50_000; assistant.usage.totalTokens = 50_001;

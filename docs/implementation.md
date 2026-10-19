@@ -2,9 +2,9 @@
 
 ## Compatibility boundary
 
-The ordinary pi 1.3.0 ExtensionAPI does not expose the active AgentSession, a native-auto-compaction setter, or an uninstall callback. The plugin loads through the official TypeScript extension system, but a small compatibility adapter in `src/host.ts` wraps the exported `AgentSession.bindExtensions` and `AgentSession.reload` methods to associate the extension's session manager with its host session.
+The ordinary pi 1.3.0 ExtensionAPI does not expose the active AgentSession, a native-auto-compaction setter, or an uninstall callback. The plugin loads through the official TypeScript extension system, but a small compatibility adapter in `src/host.ts` briefly wraps the exported `AgentSession.getActiveToolNames` method to associate the extension's session manager with its host session. pi calls this method after loading extensions during both startup and runtime rebuilding, so it also captures a session when the plugin is first installed during an already-running `/reload`.
 
-The adapter supports pi 1.3.x and rejects other versions. It shares its mapping across extension reloads, reference-counts wrappers, and restores methods when the last instance shuts down. Once associated, the plugin uses the SDK's `Agent.prepareRequest`, `SettingsManager.applyOverrides`, session projection/compaction APIs, and model registry. It does not edit installed pi code. SDK compatibility must be rechecked before extending the supported version range.
+The adapter supports pi 1.3.x and rejects other versions. It shares its mapping across extension reloads, reference-counts bootstrap wrappers, and restores the original method as soon as all pending instances capture their host, or when they shut down before capture. The SDK wrapper does no ongoing work after binding. Once associated, the plugin uses the SDK's `Agent.prepareRequest`, `SettingsManager.applyOverrides`, session projection/compaction APIs, and model registry. It does not edit installed pi code. SDK compatibility must be rechecked before extending the supported version range.
 
 ## Request and compaction behavior
 
@@ -32,6 +32,6 @@ Session overrides use `pi-compactor/settings` custom entries. Session-wide value
 
 `npm run check` checks strict TypeScript types. `npm test` uses temporary configuration directories and a fake model provider with the actual pi SDK, including request preparation, tools, compaction persistence, native manual compaction, reload, corrupt-config handling, and new/resume/fork/clone snapshot behavior. Subprocess tests exercise the actual CLI RPC protocol against a local HTTP fixture, local package installation, and Git-source installation with a locally rewritten remote. They verify persistent deactivation across processes and native-setting restoration through plugin uninstall. GitHub Actions has passed these checks on macOS, Linux, and Windows with Node.js 22.19.0 and pi 1.3.0.
 
-Actual CLI TUI checks use an isolated agent directory and a loopback dummy model. They cover loading, editing, immediate persistence, native searchable model selection and Escape behavior without making model requests. These interactive checks were performed on macOS; interactive Linux and Windows TUI sessions have not been manually exercised.
+Actual CLI TUI checks use an isolated agent directory and a loopback dummy model. They cover first installation into an already-running session followed by `/reload`, loading, editing, immediate persistence, native searchable model selection, repeated reloads and Escape behavior without making model requests. These interactive checks were performed on macOS; interactive Linux and Windows TUI sessions have not been manually exercised.
 
 The source requirements remain unchanged. This document records implementation mechanics and the host's uninstall limitation rather than silently weakening those requirements.
