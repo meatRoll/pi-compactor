@@ -28,10 +28,16 @@ Persistent rules use a versioned JSON document under pi's agent directory. Repos
 
 Session overrides use `pi-compactor/settings` custom entries. Session-wide values follow the latest settings entry rather than the selected conversation branch. Fork/clone explicitly copies the source session's latest settings so a fork from an earlier message still gets the current session configuration. New/resume/fork runtime replacement carries the previous instance's global/repository snapshot; `/reload` reads a new one.
 
+## Configuration overview
+
+`src/overview.ts` builds the six applicable rows from the instance's loaded configuration and the preview model's provider/ID. Each cell retains its raw override and independently records inheritance, whether it supplies the final effective value, and any invalid target/trigger combination when resolving through that level. Intermediate conflicts remain visible even when a higher-level override repairs the final result.
+
+The view is read-only until E explicitly opens the selected field editor at that row's scope. Cursor movement, Enter, model preview and rendering do not write settings. Model selection reuses pi's native selector and changes only the preview model. The table adapts its columns to terminal width and exposes the exact saved value for the selected cell.
+
 ## Verification scope
 
 `npm run check` checks strict TypeScript types. `npm test` uses temporary configuration directories and a fake model provider with the actual pi SDK, including request preparation, tools, compaction persistence, native manual compaction, reload, corrupt-config handling, and new/resume/fork/clone snapshot behavior. Subprocess tests exercise the actual CLI RPC protocol against a local HTTP fixture, local package installation, and Git-source installation with a locally rewritten remote. They verify persistent deactivation across processes and native-setting restoration through plugin uninstall. GitHub Actions has passed these checks on macOS, Linux, and Windows with Node.js 22.19.0 and pi 1.3.0.
 
-Actual CLI TUI checks use an isolated agent directory and a loopback dummy model. They cover first installation into an already-running session followed by `/reload`, loading, editing, immediate persistence, native searchable model selection, repeated reloads and Escape behavior without making model requests. These interactive checks were performed on macOS; interactive Linux and Windows TUI sessions have not been manually exercised.
+Actual CLI TUI checks use an isolated agent directory and a loopback dummy model. They cover first installation into an already-running session followed by `/reload`, loading, editing, immediate persistence, native searchable model selection, read-only overview navigation and explicit scope-specific editing, provider-separated previews, repeated reloads, narrow terminal resizing and Escape behavior without making model requests. These interactive checks were performed on macOS; interactive Linux and Windows TUI sessions have not been manually exercised.
 
 The source requirements remain unchanged. This document records implementation mechanics and the host's uninstall limitation rather than silently weakening those requirements.

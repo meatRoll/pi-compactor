@@ -25,7 +25,13 @@ Loading the extension turns off pi's native automatic compaction and records its
 
 ## Use
 
-Run `/compactor` in the TUI. The panel shows each field's effective value and source. Enter a field to edit it at its own effective scope.
+Run `/compactor` in the TUI. Choose **Configuration overview** to view all six levels together, or select **Trigger** / **Result target** for quick editing at that field's effective source.
+
+The overview starts in read-only mode for the current model. It lists the saved trigger and target at every global/repository/session and all-model/single-model level. `—` means there is no override, `✓` marks each field's effective source, and `~` marks an overridden value. `!` marks a target/trigger conflict at that level; the effective result and any effective conflict are shown separately below the table. Built-in defaults and the fixed 20k minimum are also shown.
+
+In the overview, use **↑/↓** to select a level and **←/→** to select a field. **E** explicitly opens that cell's editor, including when its value is inherited or overridden. **Ctrl+O** searches for another preview model using pi's native model selector. **Esc** returns to the main panel. Enter and navigation do not save changes. The selected cell also shows its exact saved value, and the snapshot note explains when external changes are loaded.
+
+Inside a field editor:
 
 - **Enter** applies a completed valid edit immediately. Use `20000`, `20k`, `1.5M`, or `80%`.
 - **Ctrl+L** chooses global, current repository, or current session.

@@ -79,6 +79,15 @@ Open the English configuration panel with `/compactor`.
 
 Each field's initial editor scope follows its own effective source, even when the two fields inherit from different levels. Keep the editable scope visible throughout the interaction.
 
+Provide a read-only **Configuration overview** from the main panel:
+
+- Show all six levels together for the preview model, with independently displayed saved trigger and result-target overrides. Show unset values as inherited, rather than filling them with effective values.
+- Mark each field's effective source and distinguish overridden values. Identify target/trigger conflicts at individual levels and separately report any conflict in the final effective result.
+- Show the final trigger (including the fixed minimum), final target, their sources, and the built-in defaults. Show the exact saved value for the selected cell.
+- Start with the current model and allow native model search to choose another preview model without changing the session's active model.
+- Use up/down to select a level, left/right to select a field, and E to explicitly edit that cell at its selected scope. Viewing, navigation and Enter do not save settings. Esc returns to the main panel.
+- Preserve the existing quick field editors. Display that the overview uses the instance's loaded snapshot and external edits require restart/reload.
+
 ## Instance loading and refresh
 
 Each running pi instance uses the configuration snapshot read at its startup or most recent `/reload`.
