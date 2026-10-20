@@ -32,7 +32,7 @@ Session overrides use `pi-compactor/settings` custom entries. Session-wide value
 
 `src/overview.ts` builds the six applicable rows from the instance's loaded configuration and the preview model's provider/ID. Each cell retains its raw override and independently records inheritance, whether it supplies the final effective value, and any invalid target/trigger combination when resolving through that level. Intermediate conflicts remain visible even when a higher-level override repairs the final result.
 
-The view is read-only until E explicitly opens the selected field editor at that row's scope. Cursor movement, Enter, model preview and rendering do not write settings. Model selection reuses pi's native selector and changes only the preview model. The table adapts its columns to terminal width and exposes the exact saved value for the selected cell.
+The overview is the single entry for trigger and result-target editing. Each `/compactor` interaction initially selects Trigger's effective row, falling back to global/all models for built-in defaults. The row and field stay selected when returning from the main panel during that interaction. The view is read-only until E explicitly opens the selected field editor at that row's scope. Cursor movement, Enter, model preview and rendering do not write settings. Model selection reuses pi's native selector and changes only the preview model. The table adapts its columns to terminal width and exposes the exact saved value for the selected cell.
 
 ## Verification scope
 

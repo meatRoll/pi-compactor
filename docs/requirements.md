@@ -65,7 +65,7 @@ The automatic-compaction switch is global and does not participate in this hiera
 
 Open the English configuration panel with `/compactor`.
 
-- Initially select the configuration that is actually effective, rather than a fixed global/repository/session scope. If the trigger and result target come from different levels, entering an individual field's editor initially selects that field's effective source. The user may explicitly choose a different scope.
+- Initially select Trigger at its effective source in the configuration overview, rather than a fixed global/repository/session scope. If it uses built-in defaults, select global/all models. The user may explicitly select another level and field; E opens the editor at that exact selected scope.
 - Show the effective trigger, effective result target, and their configuration sources.
 - During editing, clearly display the selected level, all-model/single-model scope, and affected context. Make edits to inherited global or repository settings visibly distinguishable from session-local edits, so users do not accidentally change an upper-level setting. A source change must remain visible when switching fields or scopes; immediate saving still applies without adding a separate Save step.
 - Show when the selected override is masked by a higher-priority value.
@@ -77,7 +77,7 @@ Open the English configuration panel with `/compactor`.
 - Reject an invalid edit with an error instead of saving it or silently correcting it.
 - A newly saved trigger does not immediately start compaction. It is used by the next pre-request check.
 
-Each field's initial editor scope follows its own effective source, even when the two fields inherit from different levels. Keep the editable scope visible throughout the interaction.
+Each field editor uses the explicitly selected overview cell's scope. Keep the editable scope visible throughout the interaction.
 
 Provide a read-only **Configuration overview** from the main panel:
 
@@ -86,7 +86,7 @@ Provide a read-only **Configuration overview** from the main panel:
 - Show the final trigger (including the fixed minimum), final target, their sources, and the built-in defaults. Show the exact saved value for the selected cell.
 - Start with the current model and allow native model search to choose another preview model without changing the session's active model.
 - Use up/down to select a level, left/right to select a field, and E to explicitly edit that cell at its selected scope. Viewing, navigation and Enter do not save settings. Esc returns to the main panel.
-- Preserve the existing quick field editors. Display that the overview uses the instance's loaded snapshot and external edits require restart/reload.
+- Use the overview as the single entry for editing trigger and result-target settings; omit separate main-panel field shortcuts. Remember the selected row and field when returning to the overview during the same panel interaction. A new `/compactor` interaction initially selects Trigger at its effective source. Display that the overview uses the instance's loaded snapshot and external edits require restart/reload.
 
 ## Instance loading and refresh
 
@@ -199,7 +199,7 @@ Use the host's available context accounting and model-capacity metadata when imp
 
 ## Acceptance scenarios
 
-1. Open `/compactor`, find the active settings and their sources, and complete a valid edit without a separate Save action. When fields have different sources, each editor starts at its own source and clearly shows the editing level, model scope, and affected context.
+1. Open `/compactor`, find the active settings and their sources, and complete a valid edit without a separate Save action. When fields have different sources, the overview marks each source independently; each editor uses the selected cell's scope and clearly shows the editing level, model scope, and affected context.
 2. Search for a model with `/model`-equivalent behavior, including separate entries for the same model ID from different providers.
 3. Apply the six precedence levels in the agreed order; in particular, a repository-wide value overrides a global model-specific value.
 4. Override only the trigger and inherit the result target independently; clear an override and recover the next inherited value.

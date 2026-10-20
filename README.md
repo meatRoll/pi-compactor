@@ -25,9 +25,9 @@ Loading the extension turns off pi's native automatic compaction and records its
 
 ## Use
 
-Run `/compactor` in the TUI. Choose **Configuration overview** to view all six levels together, or select **Trigger** / **Result target** for quick editing at that field's effective source.
+Run `/compactor` in the TUI. Choose **Configuration overview** to view and edit trigger and result-target settings at all six levels.
 
-The overview starts in read-only mode for the current model. It lists the saved trigger and target at every global/repository/session and all-model/single-model level. `—` means there is no override, `✓` marks each field's effective source, and `~` marks an overridden value. `!` marks a target/trigger conflict at that level; the effective result and any effective conflict are shown separately below the table. Built-in defaults and the fixed 20k minimum are also shown.
+The overview starts in read-only mode for the current model, with Trigger selected at its effective source (Global / all models when using built-in defaults). Returning to the main panel and reopening the overview keeps the last selected cell during the same `/compactor` interaction. It lists the saved trigger and target at every global/repository/session and all-model/single-model level. `—` means there is no override, `✓` marks each field's effective source, and `~` marks an overridden value. `!` marks a target/trigger conflict at that level; the effective result and any effective conflict are shown separately below the table. Built-in defaults and the fixed 20k minimum are also shown.
 
 In the overview, use **↑/↓** to select a level and **←/→** to select a field. **E** explicitly opens that cell's editor, including when its value is inherited or overridden. **Ctrl+O** searches for another preview model using pi's native model selector. **Esc** returns to the main panel. Enter and navigation do not save changes. The selected cell also shows its exact saved value, and the snapshot note explains when external changes are loaded.
 

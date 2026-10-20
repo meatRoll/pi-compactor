@@ -3,7 +3,7 @@ import { Container, Input, Key, matchesKey, SelectList, Text, type Component, ty
 import { formatAmount, formatTokens, getLayer, getRule, modelKey, parseAmount, sourceLabel, type Field, type ModelIdentity, type Selection } from "./config.ts";
 import { asError, Compactor } from "./controller.ts";
 import { report } from "./compaction.ts";
-import { buildOverview, ConfigurationOverview, type OverviewAction, type OverviewCursor } from "./overview.ts";
+import { buildOverview, ConfigurationOverview, initialOverviewCursor, type OverviewAction, type OverviewCursor } from "./overview.ts";
 
 type EditorAction = { kind: "value"; text: string } | { kind: "scope" } | { kind: "model" } | { kind: "clear" } | { kind: "close" };
 export function impact(selection: Selection): string {
@@ -46,9 +46,9 @@ export class AmountEditor implements Component, Focusable {
 async function chooseModel(c: Compactor, ctx: ExtensionCommandContext, selected = ctx.model) {
   return ctx.ui.custom<typeof selected>((tui, _theme, _keys, done) => new ModelSelectorComponent(tui, selected, c.host!.modelRuntime, ctx.scopedModels, model => done(model), () => done(undefined)));
 }
-async function editField(c: Compactor, ctx: ExtensionCommandContext, field: Field, initialModel: NonNullable<ExtensionCommandContext["model"]>, initialSelection?: Selection): Promise<void> {
+async function editField(c: Compactor, ctx: ExtensionCommandContext, field: Field, initialModel: NonNullable<ExtensionCommandContext["model"]>, initialSelection: Selection): Promise<void> {
   let model = initialModel;
-  let selection: Selection = { ...(initialSelection ?? c.effective(model)[field].source ?? { scope: "global" as const }) };
+  let selection: Selection = { ...initialSelection };
   const loadValue = () => {
     const own = getRule(getLayer(c.configuration, c.session, c.repository, selection.scope), selection.model)[field];
     const amount = own ?? c.effective(model)[field].amount;
@@ -85,9 +85,8 @@ async function editField(c: Compactor, ctx: ExtensionCommandContext, field: Fiel
     }
   }
 }
-export async function openOverview(c: Compactor, ctx: ExtensionCommandContext, initialModel: NonNullable<ExtensionCommandContext["model"]>) {
+export async function openOverview(c: Compactor, ctx: ExtensionCommandContext, initialModel: NonNullable<ExtensionCommandContext["model"]>, cursor: OverviewCursor) {
   let model = initialModel;
-  const cursor: OverviewCursor = { row: 0, field: "trigger" };
   while (c.active) {
     const action = await ctx.ui.custom<OverviewAction>((tui, theme, keys, done) => {
       const view = new ConfigurationOverview(() => buildOverview(c.configuration, c.repository, c.session, model), model, theme, cursor, done, (data, key) => keys.matches(data, key === "left" ? "tui.editor.cursorLeft" : key === "right" ? "tui.editor.cursorRight" : `tui.select.${key}`));
@@ -109,14 +108,13 @@ export async function openPanel(c: Compactor, ctx: ExtensionCommandContext): Pro
   if (!model || !(model.contextWindow > 0)) model = await chooseModel(c, ctx);
   if (!model) return;
   if (!(model.contextWindow > 0)) throw new Error("Select a model with a known context capacity to preview and edit compaction settings.");
+  const cursor = initialOverviewCursor(buildOverview(c.configuration, c.repository, c.session, model));
   let last = "overview";
   while (c.active) {
     const effective = c.effective(model);
     const p = c.configuration.preferences;
     const items = [
       { value: "overview", label: "Configuration overview", description: "View all six levels (read only)" },
-      { value: "trigger", label: `Trigger: ${formatAmount(effective.trigger.amount)} → ${formatTokens(effective.triggerPoint)}`, description: sourceLabel(effective.trigger.source) },
-      { value: "target", label: `Result target: ${formatAmount(effective.target.amount)}`, description: sourceLabel(effective.target.source) },
       { value: "automatic", label: `Automatic compaction: ${c.configuration.automatic ? "On" : "Off"}` },
       { value: "visible", label: `Footer status: ${p.visible ? "On" : "Off"}` },
       { value: "basis", label: `Footer basis: ${p.basis === "at" ? "At threshold" : "Remaining threshold"}` },
@@ -142,8 +140,7 @@ export async function openPanel(c: Compactor, ctx: ExtensionCommandContext): Pro
     last = chosen;
     try {
       if (chosen === "close") return;
-      if (chosen === "overview") model = await openOverview(c, ctx, model);
-      else if (chosen === "trigger" || chosen === "target") await editField(c, ctx, chosen, model);
+      if (chosen === "overview") model = await openOverview(c, ctx, model, cursor);
       else if (chosen === "automatic") await c.automatic(!c.configuration.automatic);
       else if (chosen === "visible") await c.preference("visible", !p.visible);
       else if (chosen === "basis") await c.preference("basis", p.basis === "at" ? "left" : "at");

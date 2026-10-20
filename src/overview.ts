@@ -43,6 +43,11 @@ export function buildOverview(configuration: Configuration, repository: string, 
   return { rows, effective };
 }
 
+export function initialOverviewCursor(data: OverviewData): OverviewCursor {
+  const row = data.rows.findIndex(row => row.trigger.state === "effective");
+  return { row: Math.max(0, row), field: "trigger" };
+}
+
 export class ConfigurationOverview implements Component {
   constructor(readonly data: () => OverviewData, readonly model: ModelIdentity, readonly theme: Theme, readonly cursor: OverviewCursor, readonly done: (action: OverviewAction) => void, readonly matches: (data: string, action: "up" | "down" | "left" | "right" | "cancel") => boolean) {}
   invalidate(): void {}
