@@ -17,6 +17,16 @@ test("real pi SDK checks before the first provider call, persists a checkpoint a
   } finally { await f.close(); }
 });
 
+test("summarization does not cap output, so reasoning cannot consume the summary budget", async () => {
+  const f = await fixture();
+  try {
+    f.seed(); await f.session.prompt("Continue the work.");
+    const summary = f.calls.find(call => call.kind === "summary");
+    assert.ok(summary);
+    assert.equal(summary.maxTokens, undefined);
+  } finally { await f.close(); }
+});
+
 test("tool follow-up requests are checked, including an oversized inseparable tool-result group", async () => {
   const f = await fixture({ tool: true, chat: index => {
     const r = response();

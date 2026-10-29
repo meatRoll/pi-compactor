@@ -15,14 +15,14 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
   await store.update(c => { c.global.all = { trigger: { unit: "tokens", value: 30_000 }, target: { unit: "tokens", value: 5_000 } }; c.automatic = options.automatic ?? true; });
   if (options.corrupt) { const { writeFile } = await import("node:fs/promises"); await writeFile(store.path, "broken"); }
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
-  const calls: { kind: "summary" | "chat"; context: Context }[] = [];
+  const calls: { kind: "summary" | "chat"; context: Context; maxTokens?: number }[] = [];
   let chats = 0;
   runtime.registerProvider("compactor-test", {
     api: "openai-completions", baseUrl: "https://example.invalid", apiKey: "test-key",
     models: [{ id: "model", name: "Test", contextWindow: 200_000, maxTokens: 8_192, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-    streamSimple: (_model, context) => {
+    streamSimple: (_model, context, streamOptions) => {
       const summary = getCurrentSystemPrompt(context.messages).includes("Create a concise context checkpoint");
-      calls.push({ kind: summary ? "summary" : "chat", context: structuredClone(context) });
+      calls.push({ kind: summary ? "summary" : "chat", context: structuredClone(context), maxTokens: streamOptions?.maxTokens });
       const message = summary ? options.summary?.() ?? response("Checkpoint: continue the current task.") : options.chat?.(chats++) ?? response();
       const stream = createAssistantMessageEventStream();
       if (message.stopReason === "error" || message.stopReason === "aborted") stream.push({ type: "error", reason: message.stopReason, error: message });

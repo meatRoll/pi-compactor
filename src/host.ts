@@ -1,6 +1,6 @@
 import { AgentSession, VERSION, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-// ExtensionContext deliberately exposes no Agent or SettingsManager. pi 1.3
+// ExtensionContext deliberately exposes no Agent or SettingsManager. pi 1.3 and 1.4
 // reads active tools after loading extensions, even within an in-flight reload.
 interface BridgeState {
   sessions: WeakMap<object, AgentSession>;
@@ -11,7 +11,7 @@ interface BridgeState {
 const symbol = Symbol.for("pi-compactor/sdk-bridge/v2");
 const shared = globalThis as unknown as Record<symbol, BridgeState | undefined>;
 export function installHostBridge(): { get(ctx: ExtensionContext): AgentSession; dispose(): void } {
-  if (!/^1\.3\./.test(VERSION)) throw new Error(`pi-compactor's SDK adapter supports pi 1.3.x; found ${VERSION}.`);
+  if (!/^1\.(3|4)\./.test(VERSION)) throw new Error(`pi-compactor's SDK adapter supports pi 1.3.x and 1.4.x; found ${VERSION}.`);
   let state = shared[symbol];
   if (!state) {
     state = { sessions: new WeakMap(), count: 0, activeTools: AgentSession.prototype.getActiveToolNames };

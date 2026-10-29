@@ -62,7 +62,11 @@ export async function compactToTarget(host: AgentSession, ctx: ExtensionContext,
   const response = await ctx.modelRegistry.streamSimple(model, {
     systemPrompt: SUMMARY_PROMPT,
     messages: [{ role: "user", content: [{ type: "text", text: `<conversation>\n${serializeConversation(convertToLlm(plan.prefix))}\n</conversation>\nAim to keep the checkpoint within approximately ${plan.summaryBudget} tokens.` }], timestamp: Date.now() }],
-  }, { maxTokens: plan.summaryBudget, signal, cacheRetention: "none" }).result();
+    // No output cap: some models spend output tokens on reasoning even when thinking
+    // is not requested. A fixed cap can be consumed entirely by that reasoning and
+    // return a truncated/empty summary. The prompt still requests the budgeted length;
+    // pi sizes the response from the model limit, as native compaction does.
+  }, { signal, cacheRetention: "none" }).result();
   signal?.throwIfAborted();
   if (response.stopReason === "error" || response.stopReason === "aborted" || response.stopReason === "length") throw new Error(response.errorMessage || `Compaction stopped: ${response.stopReason}. The previous context was retained.`);
   if (response.content.some(block => block.type === "toolCall")) throw new Error("Compaction returned a tool call instead of a summary.");

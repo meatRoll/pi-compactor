@@ -2,7 +2,7 @@
 
 Configure automatic context compaction inside pi, with per-model, repository and session settings, a compact footer indicator, and a best-effort target for the **total context after compaction**.
 
-Requires **pi 1.3.x** and **Node.js 22.19 or later**. Tested against pi 1.3.0. The interface and documentation are in English.
+Requires **pi 1.3.x or 1.4.x** and **Node.js 22.19 or later**. Tested against pi 1.3.0 and 1.4.0. The interface and documentation are in English.
 
 ## Install
 
@@ -76,6 +76,8 @@ Immediately before each session model request, including requests after tools fi
 
 When needed, it summarizes older conversation and budgets recent history against the total-context target, including the system context. Inseparable tool-call/result groups stay together; an oversized group may be included in the summary instead of retained verbatim. The checkpoint and compaction usage are saved in pi's session format, while the original history remains in the session file.
 
+The summary request has no fixed output-token cap, so a reasoning model cannot exhaust the summary budget on thinking and return no summary. The requested checkpoint size remains a prompt-level target; pi sizes the response from the model limit and the actual result is checked against the trigger.
+
 The result target is best effort. Provider usage is used when available; new or compacted context is estimated with pi's token estimator. Counts are not provider-exact. A result above the target may continue if it is below the trigger. Failed compaction, or a result still at the trigger, pauses the request and reports the error; there is no automatic compaction loop.
 
 Compaction uses the request's selected model and credentials, so it can incur normal model usage costs.
@@ -133,6 +135,6 @@ npm test
 
 Tests exercise configuration inheritance, concurrent persistence, Git worktrees, native-compaction ownership, real SDK requests and tool continuations, failure handling (including with native retry enabled), manual compaction, reload, session copying, and corrupt-config recovery. Actual CLI tests cover RPC, local/Git-source installation, persistent deactivation, and uninstall restoration. They use temporary directories and fake/local providers, without sending paid model requests or touching your normal pi configuration.
 
-GitHub Actions has verified type checking and the automated suite on macOS, Linux, and Windows with Node.js 22.19.0 and pi 1.3.0. Interactive TUI behavior has been checked on macOS; interactive Linux and Windows TUI sessions have not been manually exercised. The compatibility bridge is restricted to pi 1.3.x because its lifecycle integration uses exported SDK class methods beyond the ordinary ExtensionAPI. See [implementation notes](docs/implementation.md) and the [requirements](docs/requirements.md).
+GitHub Actions has verified type checking and the automated suite on macOS, Linux, and Windows with Node.js 22.19.0 and pi 1.3.0. Interactive TUI behavior has been checked on macOS; interactive Linux and Windows TUI sessions have not been manually exercised. The compatibility bridge supports pi 1.3.x and 1.4.x because its lifecycle integration uses exported SDK class methods beyond the ordinary ExtensionAPI. See [implementation notes](docs/implementation.md) and the [requirements](docs/requirements.md).
 
 MIT licensed. See [LICENSE](LICENSE).
