@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { estimateMessages } from "../src/compaction.ts";
 import { fixture, response } from "./fixture.ts";
+
+async function attempts(root: string): Promise<any[]> {
+  const text = await readFile(join(root, "compactor", "compactions.jsonl"), "utf8");
+  return text.trim().split("\n").map(line => JSON.parse(line));
+}
 
 test("real pi SDK checks before the first provider call, persists a checkpoint and preserves system context", async () => {
   const f = await fixture();
@@ -17,13 +24,13 @@ test("real pi SDK checks before the first provider call, persists a checkpoint a
   } finally { await f.close(); }
 });
 
-test("summarization does not cap output, so reasoning cannot consume the summary budget", async () => {
-  const f = await fixture();
+test("summarization caps output above the summary budget without reserving the model limit", async () => {
+  const f = await fixture({ maxTokens: 393_216 });
   try {
     f.seed(); await f.session.prompt("Continue the work.");
     const summary = f.calls.find(call => call.kind === "summary");
     assert.ok(summary);
-    assert.equal(summary.maxTokens, undefined);
+    assert.equal(summary.maxTokens, 32_768);
   } finally { await f.close(); }
 });
 
@@ -51,6 +58,33 @@ test("a failed summary prevents the conversational provider request and preserve
     assert.equal(f.manager.getEntries().some(e => e.type === "compaction"), false);
     assert.match(f.session.getLastAssistantText() ?? f.session.messages.findLast(m => m.role === "assistant")?.errorMessage ?? "", /Summary unavailable|Compactor/);
   } finally { await f.close(); }
+});
+
+test("compaction attempts are recorded with provider failure details", async () => {
+  const failed = await fixture({ summary: () => ({ ...response(), stopReason: "error", errorMessage: "terminated" }) });
+  try {
+    failed.seed(); await failed.session.prompt("Continue.");
+    const [record] = await attempts(failed.root);
+    assert.ok(record);
+    assert.equal(record.ok, false);
+    assert.equal(record.phase, "attempt");
+    assert.match(record.error, /terminated/);
+    assert.equal(record.stopReason, "error");
+    assert.equal(record.model.provider, "compactor-test");
+    assert.ok(record.tokensBefore >= 50_000);
+    assert.ok(record.durationMs >= 0);
+  } finally { await failed.close(); }
+  const completed = await fixture();
+  try {
+    completed.seed(); await completed.session.prompt("Continue.");
+    const [record] = await attempts(completed.root);
+    assert.ok(record);
+    assert.equal(record.ok, true);
+    assert.equal(record.phase, "completed");
+    assert.equal(record.error, undefined);
+    assert.ok(record.tokensAfter < record.tokensBefore);
+    assert.ok(record.summaryChars > 0);
+  } finally { await completed.close(); }
 });
 
 test("a transient compaction failure cannot trigger pi's enabled automatic model retry", async () => {

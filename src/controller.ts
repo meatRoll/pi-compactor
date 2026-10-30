@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseColor } from "@earendil-works/pi-tui";
 import { getAgentDir, getPackageDir, SessionManager, type AgentSession, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
-import { defaults, emptyLayer, footer, getLayer, resolve, setField, sourceLabel, type Amount, type Configuration, type Field, type Layer, type ModelIdentity, type Preferences, type Selection } from "./config.ts";
-import { compactToTarget, estimateProjection, outcomeMessage, report } from "./compaction.ts";
+import { defaults, emptyLayer, footer, getLayer, resolve, setField, sourceLabel, type Amount, type Configuration, type Effective, type Field, type Layer, type ModelIdentity, type Preferences, type Selection } from "./config.ts";
+import { CompactionError, compactToTarget, estimateProjection, outcomeMessage, report, type CompactionResult } from "./compaction.ts";
+import { DiagnosticsLog, type CompactionAttempt } from "./diagnostics.ts";
 import { installHostBridge } from "./host.ts";
 import { Lifecycle } from "./lifecycle.ts";
 import { currentSession, saveSession, sessionSettings } from "./session.ts";
@@ -21,6 +22,7 @@ export class Compactor {
   context?: ExtensionContext;
   readonly store: ConfigStore;
   readonly lifecycle: Lifecycle;
+  readonly diagnostics: DiagnosticsLog;
   private readonly bridge = installHostBridge();
   private detachGate?: () => void;
   private listeners: (() => void)[] = [];
@@ -29,6 +31,7 @@ export class Compactor {
   constructor(readonly pi: ExtensionAPI, agentDir = getAgentDir()) {
     this.store = new ConfigStore(agentDir);
     this.lifecycle = new Lifecycle(agentDir);
+    this.diagnostics = new DiagnosticsLog(agentDir);
   }
   effective(model: ModelIdentity | undefined = this.context?.model) {
     if (!model || !(model.contextWindow > 0)) throw new Error("Select a model with a known context capacity.");
@@ -100,20 +103,59 @@ export class Compactor {
         report(ctx, `Compactor: ${effective.invalid} Fix the configuration with /compactor.`, "error");
         throw paused(new Error(effective.invalid));
       }
+      const started = Date.now();
+      let result: CompactionResult;
       try {
         report(ctx, "Compacting context…");
-        const after = await compactToTarget(host, ctx, effective, before, signal, next.model);
-        controller.updateStatus(after);
-        report(ctx, outcomeMessage(before, after, effective.target.tokens));
-        if (after >= effective.triggerPoint) throw new Error("Compacted context is still at the trigger. Request paused; adjust settings or compact manually.");
-        return { ...next, context: { ...next.context, messages: host.sessionManager.buildSessionProjection().messages } };
+        result = await compactToTarget(host, ctx, effective, before, signal, next.model);
       } catch (error) {
+        await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "attempt", error });
         report(ctx, asError(error).message, "error");
         throw paused(error);
       }
+      if (result.after >= effective.triggerPoint) {
+        const error = new Error("Compacted context is still at the trigger. Request paused; adjust settings or compact manually.");
+        await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "post-check", error, result });
+        report(ctx, error.message, "error");
+        throw paused(error);
+      }
+      controller.updateStatus(result.after);
+      report(ctx, outcomeMessage(before, result.after, effective.target.tokens));
+      await controller.diagnose(ctx, next.model, effective, before, started, { ok: true, phase: "completed", result });
+      return { ...next, context: { ...next.context, messages: host.sessionManager.buildSessionProjection().messages } };
     };
     host.agent.prepareRequest = gate;
     this.detachGate = () => { if (host.agent.prepareRequest === gate) host.agent.prepareRequest = previous; };
+  }
+  private async diagnose(
+    ctx: ExtensionContext,
+    model: { provider: string; id: string; contextWindow: number; maxTokens: number; reasoning?: boolean },
+    effective: Effective,
+    before: number,
+    started: number,
+    outcome: { ok: boolean; phase: CompactionAttempt["phase"]; result?: CompactionResult; error?: unknown },
+  ): Promise<void> {
+    const error = outcome.error === undefined ? undefined : asError(outcome.error);
+    const details = error instanceof CompactionError ? error.details : undefined;
+    await this.diagnostics.append({
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - started,
+      ok: outcome.ok,
+      phase: outcome.phase,
+      sessionId: ctx.sessionManager.getSessionId(),
+      sessionFile: ctx.sessionManager.getSessionFile(),
+      cwd: ctx.cwd,
+      repository: this.repository || undefined,
+      model: { provider: model.provider, id: model.id, contextWindow: model.contextWindow, maxTokens: model.maxTokens, reasoning: Boolean(model.reasoning) },
+      trigger: effective.triggerPoint,
+      target: effective.target.tokens,
+      tokensBefore: before,
+      tokensAfter: outcome.result?.after,
+      summaryChars: outcome.result?.summaryChars ?? details?.summaryChars,
+      stopReason: details?.stopReason,
+      usage: outcome.result?.usage ?? details?.usage,
+      error: error ? describeError(error) : undefined,
+    });
   }
   async edit(selection: Selection, field: Field, amount: Amount | undefined, model: ModelIdentity): Promise<void> {
     const candidate = structuredClone(this.configuration);
@@ -205,6 +247,10 @@ export class Compactor {
   }
 }
 export function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
+function describeError(error: Error): string {
+  const cause = error.cause instanceof Error ? ` | cause: ${error.cause.name}: ${error.cause.message}` : "";
+  return `${error.name}: ${error.message}${cause}`;
+}
 function paused(error: unknown): Error {
   // pi classifies retries by error-message text. Keep provider status/error
   // keywords in the separate notification so a failed summary is not retried.

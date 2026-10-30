@@ -9,7 +9,7 @@ import { ConfigStore } from "../src/storage.ts";
 export function response(text = "OK"): AssistantMessage {
   return { role: "assistant", api: "openai-completions", provider: "compactor-test", model: "model", timestamp: Date.now(), stopReason: "stop", content: [{ type: "text", text }], usage: { input: 100, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 101, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
-export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean; installOnReload?: boolean } = {}) {
+export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean; installOnReload?: boolean; maxTokens?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "compactor-sdk-"));
   const store = new ConfigStore(root);
   await store.update(c => { c.global.all = { trigger: { unit: "tokens", value: 30_000 }, target: { unit: "tokens", value: 5_000 } }; c.automatic = options.automatic ?? true; });
@@ -19,7 +19,7 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
   let chats = 0;
   runtime.registerProvider("compactor-test", {
     api: "openai-completions", baseUrl: "https://example.invalid", apiKey: "test-key",
-    models: [{ id: "model", name: "Test", contextWindow: 200_000, maxTokens: 8_192, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    models: [{ id: "model", name: "Test", contextWindow: 200_000, maxTokens: options.maxTokens ?? 8_192, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple: (_model, context, streamOptions) => {
       const summary = getCurrentSystemPrompt(context.messages).includes("Create a concise context checkpoint");
       calls.push({ kind: summary ? "summary" : "chat", context: structuredClone(context), maxTokens: streamOptions?.maxTokens });

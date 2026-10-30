@@ -76,11 +76,17 @@ Immediately before each session model request, including requests after tools fi
 
 When needed, it summarizes older conversation and budgets recent history against the total-context target, including the system context. Inseparable tool-call/result groups stay together; an oversized group may be included in the summary instead of retained verbatim. The checkpoint and compaction usage are saved in pi's session format, while the original history remains in the session file.
 
-The summary request has no fixed output-token cap, so a reasoning model cannot exhaust the summary budget on thinking and return no summary. The requested checkpoint size remains a prompt-level target; pi sizes the response from the model limit and the actual result is checked against the trigger.
+The summary request caps output well above the requested checkpoint: enough room for reasoning models that think while summarizing, but far below the model's full output limit. Some providers pre-charge input plus maximum output against a quota, so advertising the full limit can reject an otherwise affordable summary. The requested checkpoint size remains a prompt-level target and the actual result is checked against the trigger.
 
 The result target is best effort. Provider usage is used when available; new or compacted context is estimated with pi's token estimator. Counts are not provider-exact. A result above the target may continue if it is below the trigger. Failed compaction, or a result still at the trigger, pauses the request and reports the error; there is no automatic compaction loop.
 
 Compaction uses the request's selected model and credentials, so it can incur normal model usage costs.
+
+## Diagnostics
+
+Every automatic compaction attempt appends one JSON line to `compactor/compactions.jsonl` under pi's user configuration directory. A record includes the session and repository, the request's model, effective trigger and target, tokens before and after, summary length, provider usage and stop reason, elapsed time, and the full error for a failed attempt. The file rotates to `compactions.jsonl.1` at 2 MB.
+
+Failures are still reported in the UI and pause the request. The log keeps the original provider error after the notification disappears; without it, the session file only retains the generic paused-request message. Writing the log is best effort and never blocks compaction. Manual `/compact` is not recorded. Records contain identifiers and error text, but not the conversation or the summary.
 
 ## Footer
 
@@ -133,7 +139,7 @@ npm run check
 npm test
 ```
 
-Tests exercise configuration inheritance, concurrent persistence, Git worktrees, native-compaction ownership, real SDK requests and tool continuations, failure handling (including with native retry enabled), manual compaction, reload, session copying, and corrupt-config recovery. Actual CLI tests cover RPC, local/Git-source installation, persistent deactivation, and uninstall restoration. They use temporary directories and fake/local providers, without sending paid model requests or touching your normal pi configuration.
+Tests exercise configuration inheritance, concurrent persistence, Git worktrees, native-compaction ownership, real SDK requests and tool continuations, failure handling (including with native retry enabled), manual compaction, reload, session copying, diagnostics logging, and corrupt-config recovery. Actual CLI tests cover RPC, local/Git-source installation, persistent deactivation, and uninstall restoration. They use temporary directories and fake/local providers, without sending paid model requests or touching your normal pi configuration.
 
 GitHub Actions has verified type checking and the automated suite on macOS, Linux, and Windows with Node.js 22.19.0 and pi 1.3.0. Interactive TUI behavior has been checked on macOS; interactive Linux and Windows TUI sessions have not been manually exercised. The compatibility bridge supports pi 1.3.x and 1.4.x because its lifecycle integration uses exported SDK class methods beyond the ordinary ExtensionAPI. See [implementation notes](docs/implementation.md) and the [requirements](docs/requirements.md).
 
