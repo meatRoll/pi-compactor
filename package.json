@@ -1,13 +1,29 @@
 {
   "name": "pi-compactor",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Configure automatic context compaction from the pi TUI",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "compaction"],
-  "files": ["src", "bin", "README.md", "LICENSE", "docs"],
-  "bin": { "pi-compactor": "./bin/manage.mjs" },
-  "pi": { "extensions": ["./src/index.ts"] },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "compaction"
+  ],
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "bin": {
+    "pi-compactor": "./bin/manage.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts"
@@ -27,5 +43,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
-  "engines": { "node": ">=22.19.0" }
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }
