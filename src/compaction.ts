@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { getCurrentSystemMessage, type Usage } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, retryAssistantCall, type AssistantMessage, type Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens, convertToLlm, estimateTokens, serializeConversation, type AgentSession, type ExtensionContext, type SessionEntry, type SessionProjection } from "@earendil-works/pi-coding-agent";
 import { formatTokens, type Effective } from "./config.ts";
 
@@ -54,7 +54,7 @@ export function planCompaction(projection: SessionProjection, target: number, ma
 }
 /** Response metadata for a summarization request that produced no usable checkpoint. */
 export class CompactionError extends Error {
-  constructor(message: string, readonly details: { stopReason?: string; usage?: Usage; summaryChars?: number } = {}) {
+  constructor(message: string, readonly details: { stopReason?: string; usage?: Usage; summaryChars?: number; attempts?: number } = {}) {
     super(message);
     this.name = "CompactionError";
   }
@@ -63,6 +63,7 @@ export interface CompactionResult {
   after: number;
   summaryChars: number;
   usage?: Usage;
+  attempts: number;
 }
 // Room for the requested checkpoint plus reasoning on models that think while
 // summarizing, while staying far below the model's full output limit. Some
@@ -76,16 +77,32 @@ export async function compactToTarget(host: AgentSession, ctx: ExtensionContext,
   if (!model) throw new Error("Select a model before compacting.");
   const projection = host.sessionManager.buildSessionProjection();
   const plan = planCompaction(projection, effective.target.tokens, model.maxTokens);
-  const response = await ctx.modelRegistry.streamSimple(model, {
-    systemPrompt: SUMMARY_PROMPT,
-    messages: [{ role: "user", content: [{ type: "text", text: `<conversation>\n${serializeConversation(convertToLlm(plan.prefix))}\n</conversation>\nAim to keep the checkpoint within approximately ${plan.summaryBudget} tokens.` }], timestamp: Date.now() }],
-    // Keep the cap well above the requested checkpoint: some models spend output
-    // tokens on reasoning even when thinking is not requested. A small fixed cap
-    // can be consumed entirely by that reasoning and return a truncated/empty
-    // summary, while the model's full limit can be reserved against provider quota.
-  }, { signal, cacheRetention: "none", maxTokens: Math.min(SUMMARY_OUTPUT_LIMIT, model.maxTokens > 0 ? model.maxTokens : SUMMARY_OUTPUT_LIMIT) }).result();
+  let attempts = 0;
+  const summarize = () => {
+    attempts++;
+    return ctx.modelRegistry.streamSimple(model, {
+      systemPrompt: SUMMARY_PROMPT,
+      messages: [{ role: "user", content: [{ type: "text", text: `<conversation>\n${serializeConversation(convertToLlm(plan.prefix))}\n</conversation>\nAim to keep the checkpoint within approximately ${plan.summaryBudget} tokens.` }], timestamp: Date.now() }],
+      // Keep the cap well above the requested checkpoint: some models spend output
+      // tokens on reasoning even when thinking is not requested. A small fixed cap
+      // can be consumed entirely by that reasoning and return a truncated/empty
+      // summary, while the model's full limit can be reserved against provider quota.
+    }, { signal, cacheRetention: "none", maxTokens: Math.min(SUMMARY_OUTPUT_LIMIT, model.maxTokens > 0 ? model.maxTokens : SUMMARY_OUTPUT_LIMIT) }).result();
+  };
+  let response: AssistantMessage;
+  try {
+    // Transient provider/transport failures retry under the session's retry policy,
+    // as pi's native summarizer does. Quota/billing and other deterministic errors
+    // are returned immediately by the classifier.
+    response = await retryAssistantCall(summarize, host.settingsManager.getRetrySettings(), signal, {
+      onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) =>
+        report(ctx, `Compaction retry ${attempt}/${maxAttempts} after: ${errorMessage} (${Math.round(delayMs)} ms)`, "warning"),
+    });
+  } catch (error) {
+    throw new CompactionError(error instanceof Error ? error.message : String(error), { attempts });
+  }
   signal?.throwIfAborted();
-  const details = { stopReason: response.stopReason, usage: response.usage };
+  const details = { stopReason: response.stopReason, usage: response.usage, attempts };
   if (response.stopReason === "error" || response.stopReason === "aborted" || response.stopReason === "length") throw new CompactionError(response.errorMessage || `Compaction stopped: ${response.stopReason}. The previous context was retained.`, details);
   if (response.content.some(block => block.type === "toolCall")) throw new CompactionError("Compaction returned a tool call instead of a summary.", details);
   const summary = response.content.filter(block => block.type === "text").map(block => block.text).join("\n").trim();
@@ -94,7 +111,7 @@ export async function compactToTarget(host: AgentSession, ctx: ExtensionContext,
   host.refreshContext();
   const entry = host.sessionManager.getEntry(id);
   if (entry?.type === "compaction") await host.extensionRunner.emit({ type: "session_compact", compactionEntry: entry, fromExtension: true, reason: "threshold", willRetry: false });
-  return { after: estimateMessages(host.sessionManager.buildSessionProjection().messages), summaryChars: summary.length, usage: response.usage };
+  return { after: estimateMessages(host.sessionManager.buildSessionProjection().messages), summaryChars: summary.length, usage: response.usage, attempts };
 }
 export function report(ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void {
   if (ctx.hasUI) ctx.ui.notify(message, type);

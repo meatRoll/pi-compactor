@@ -21,6 +21,8 @@ export interface CompactionAttempt {
   target: number;
   tokensBefore: number;
   tokensAfter?: number;
+  /** Summarization attempts, including retries under the session retry policy. */
+  attempts?: number;
   summaryChars?: number;
   stopReason?: string;
   usage?: unknown;

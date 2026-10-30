@@ -72,6 +72,7 @@ test("compaction attempts are recorded with provider failure details", async () 
     assert.equal(record.stopReason, "error");
     assert.equal(record.model.provider, "compactor-test");
     assert.ok(record.tokensBefore >= 50_000);
+    assert.equal(record.attempts, 1);
     assert.ok(record.durationMs >= 0);
   } finally { await failed.close(); }
   const completed = await fixture();
@@ -91,9 +92,48 @@ test("a transient compaction failure cannot trigger pi's enabled automatic model
   const f = await fixture({ retry: true, summary: () => ({ ...response(), stopReason: "error", errorMessage: "429 rate limit exceeded" }) });
   try {
     f.seed(); await f.session.prompt("Continue.");
-    assert.deepEqual(f.calls.map(c => c.kind), ["summary"]);
+    // The summary itself retries under the session policy, but the paused
+    // conversational request is never retried by pi's automatic retry.
+    assert.deepEqual(f.calls.filter(call => call.kind === "chat"), []);
+    assert.equal(f.calls.filter(call => call.kind === "summary").length, 3);
     assert.equal(f.session.autoRetryEnabled, true);
     assert.equal(f.manager.getEntries().some(entry => entry.type === "compaction"), false);
+    const [record] = await attempts(f.root);
+    assert.equal(record.attempts, 3);
+  } finally { await f.close(); }
+});
+
+test("a transient summarization failure is retried and the compaction completes", async () => {
+  let summaries = 0;
+  const f = await fixture({ retry: true, summary: () => {
+    summaries++;
+    return summaries === 1
+      ? { ...response(), stopReason: "error", errorMessage: "terminated" }
+      : response("Checkpoint after retry.");
+  } });
+  try {
+    f.seed(); await f.session.prompt("Continue.");
+    assert.equal(summaries, 2);
+    assert.deepEqual(f.calls.map(call => call.kind), ["summary", "summary", "chat"]);
+    assert.ok(f.manager.getEntries().some(entry => entry.type === "compaction" && entry.fromHook));
+    const [record] = await attempts(f.root);
+    assert.equal(record.ok, true);
+    assert.equal(record.attempts, 2);
+  } finally { await f.close(); }
+});
+
+test("a deterministic summarization failure is not retried", async () => {
+  let summaries = 0;
+  const f = await fixture({ retry: true, summary: () => {
+    summaries++;
+    return { ...response(), stopReason: "error", errorMessage: "401: Invalid 'Authorization' header" };
+  } });
+  try {
+    f.seed(); await f.session.prompt("Continue.");
+    assert.equal(summaries, 1);
+    assert.deepEqual(f.calls.map(call => call.kind), ["summary"]);
+    const [record] = await attempts(f.root);
+    assert.equal(record.attempts, 1);
   } finally { await f.close(); }
 });
 

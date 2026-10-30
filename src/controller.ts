@@ -151,6 +151,7 @@ export class Compactor {
       target: effective.target.tokens,
       tokensBefore: before,
       tokensAfter: outcome.result?.after,
+      attempts: outcome.result?.attempts ?? details?.attempts,
       summaryChars: outcome.result?.summaryChars ?? details?.summaryChars,
       stopReason: details?.stopReason,
       usage: outcome.result?.usage ?? details?.usage,
