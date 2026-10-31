@@ -34,6 +34,31 @@ test("summarization caps output above the summary budget without reserving the m
   } finally { await f.close(); }
 });
 
+const DISABLE_THINKING = { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" };
+
+for (const level of ["max", "off"] as const) {
+  test(`summaries use the request thinking level (${level}) and mirror pi native compaction`, async () => {
+    const f = await fixture({ reasoning: true, thinkingLevelMap: DISABLE_THINKING });
+    try {
+      f.session.setThinkingLevel(level);
+      f.seed(); await f.session.prompt("Continue the work.");
+      assert.deepEqual(f.errors, []);
+      assert.equal(f.calls.find(call => call.kind === "summary")?.reasoning, level === "off" ? undefined : level);
+    } finally { await f.close(); }
+  });
+}
+
+test("models that cannot disable thinking summarize at the clamped lowest level", async () => {
+  const f = await fixture({ reasoning: true, thinkingLevelMap: { ...DISABLE_THINKING, off: null } });
+  try {
+    f.session.setThinkingLevel("off");
+    assert.equal(f.session.thinkingLevel, "low");
+    f.seed(); await f.session.prompt("Continue the work.");
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.calls.find(call => call.kind === "summary")?.reasoning, "low");
+  } finally { await f.close(); }
+});
+
 test("tool follow-up requests are checked, including an oversized inseparable tool-result group", async () => {
   const f = await fixture({ tool: true, chat: index => {
     const r = response();

@@ -107,7 +107,7 @@ export class Compactor {
       let result: CompactionResult;
       try {
         report(ctx, "Compacting context…");
-        result = await compactToTarget(host, ctx, effective, before, signal, next.model);
+        result = await compactToTarget(host, ctx, effective, before, signal, next.model, next.thinkingLevel);
       } catch (error) {
         await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "attempt", error });
         report(ctx, asError(error).message, "error");
