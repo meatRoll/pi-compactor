@@ -34,7 +34,8 @@ test("compaction attempts append as JSON lines with private permissions", async 
     assert.equal(lines[0].error, "Error: terminated");
     assert.equal(lines[1].ok, true);
     assert.equal(lines[1].tokensAfter, 18_500);
-    assert.equal((await stat(log.path)).mode & 0o777, 0o600);
+    // Windows does not expose POSIX permission bits; writeFile({ mode }) is advisory there.
+    if (process.platform !== "win32") assert.equal((await stat(log.path)).mode & 0o777, 0o600);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
