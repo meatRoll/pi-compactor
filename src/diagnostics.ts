@@ -11,6 +11,8 @@ export interface CompactionAttempt {
   ok: boolean;
   /** `attempt` covers planning, summarizing and persisting the checkpoint. */
   phase: "attempt" | "post-check" | "completed";
+  /** Why automatic compaction ran. Older records may omit it. */
+  reason?: "threshold" | "overflow";
   sessionId: string;
   sessionFile?: string;
   cwd: string;

@@ -11,6 +11,7 @@ function attempt(overrides: Partial<CompactionAttempt> = {}): CompactionAttempt 
     durationMs: 60_270,
     ok: false,
     phase: "attempt",
+    reason: "threshold",
     sessionId: "session-1",
     cwd: "/work",
     model: { provider: "meatroll", id: "model", contextWindow: 1_000_000, maxTokens: 8_192, reasoning: true },
@@ -31,6 +32,7 @@ test("compaction attempts append as JSON lines with private permissions", async 
     const lines = (await readFile(log.path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.equal(lines.length, 2);
     assert.equal(lines[0].phase, "attempt");
+    assert.equal(lines[0].reason, "threshold");
     assert.equal(lines[0].error, "Error: terminated");
     assert.equal(lines[1].ok, true);
     assert.equal(lines[1].tokensAfter, 18_500);
