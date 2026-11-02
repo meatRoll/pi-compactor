@@ -74,6 +74,8 @@ A saved threshold above model capacity is preserved and warned about. Models wit
 
 Immediately before each session model request, including requests after tools finish, the extension checks context usage. Saving a setting never starts compaction itself.
 
+Provider-side context and request-size overflows are also recovered automatically. This includes HTTP 413 responses such as `Request body too large` from a proxy or gateway, which can happen when an image-heavy history exceeds a byte limit while its token count is still below the trigger. The failed attempt is omitted from model context, older history is compacted once, and the interrupted turn is retried without a new user prompt. A second overflow in the same attempt is reported instead of looping; manual `/compact` remains available. Turning automatic compaction off disables this recovery as well.
+
 When needed, it summarizes older conversation and budgets recent history against the total-context target, including the system context. Inseparable tool-call/result groups stay together; an oversized group may be included in the summary instead of retained verbatim. The checkpoint and compaction usage are saved in pi's session format, while the original history remains in the session file.
 
 The summary request caps output well above the requested checkpoint: enough room for reasoning models that think while summarizing, but far below the model's full output limit. Some providers pre-charge input plus maximum output against a quota, so advertising the full limit can reject an otherwise affordable summary. As pi's native compaction does, the summary uses the thinking level of the request being compacted and leaves thinking unset when that level is `off`. A model that cannot disable thinking is clamped by pi to its lowest supported level, so it summarizes at that level instead of falling back to the provider's default. The requested checkpoint size remains a prompt-level target and the actual result is checked against the trigger.
@@ -86,7 +88,7 @@ Compaction uses the request's selected model and credentials, so it can incur no
 
 ## Diagnostics
 
-Every automatic compaction attempt appends one JSON line to `compactor/compactions.jsonl` under pi's user configuration directory. A record includes the session and repository, the request's model, effective trigger and target, tokens before and after, attempt count, summary length, provider usage and stop reason, elapsed time, and the full error for a failed attempt. The file rotates to `compactions.jsonl.1` at 2 MB.
+Every automatic compaction attempt appends one JSON line to `compactor/compactions.jsonl` under pi's user configuration directory. A record includes the session and repository, the request's model, why compaction ran (threshold or overflow), effective trigger and target, tokens before and after, attempt count, summary length, provider usage and stop reason, elapsed time, and the full error for a failed attempt. The file rotates to `compactions.jsonl.1` at 2 MB.
 
 Failures are still reported in the UI and pause the request. The log keeps the original provider error after the notification disappears; without it, the session file only retains the generic paused-request message. Writing the log is best effort and never blocks compaction. Manual `/compact` is not recorded. Records contain identifiers and error text, but not the conversation or the summary.
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-compactor",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Configure automatic context compaction from the pi TUI",
   "type": "module",
   "license": "MIT",

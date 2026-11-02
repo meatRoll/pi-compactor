@@ -290,3 +290,93 @@ test("corrupt non-interactive configuration never reaches a provider", async () 
     assert.equal(f.calls.length, 0);
   } finally { await f.close(); }
 });
+
+test("a 413 request-body overflow compacts and retries the failed turn once", async () => {
+  let chats = 0;
+  const f = await fixture({ chat: index => index === 0
+    ? { ...response(), content: [], stopReason: "error", errorMessage: '413 "Request body too large"' }
+    : response("Recovered after compaction.") });
+  try {
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: [
+      { type: "text", text: "Earlier image and context. ".repeat(2_000) },
+      { type: "image", mimeType: "image/png", data: "A".repeat(200_000) },
+    ], timestamp: 1 });
+    const first = response("Earlier answer."); first.timestamp = 2; first.usage.input = 10_000; first.usage.totalTokens = 10_001;
+    f.manager.appendMessage(first);
+    f.manager.appendMessage({ role: "user", content: "More recent context. ".repeat(1_700), timestamp: 3 });
+    const recent = response("Recent answer."); recent.timestamp = 4; recent.usage.input = 15_000; recent.usage.totalTokens = 15_001;
+    f.manager.appendMessage(recent);
+    f.session.refreshContext();
+
+    await f.session.prompt("Continue after the failed request.");
+
+    // The failed request is omitted, the image-bearing prefix is compacted once,
+    // and the turn is retried without another user prompt or the old image bytes.
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary", "chat"]);
+    assert.equal(f.session.getLastAssistantText(), "Recovered after compaction.");
+    assert.ok(!JSON.stringify(f.calls.find(call => call.kind === "summary")!.context).includes('"type":"image"'));
+    assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes('"type":"image"'));
+    assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes("Request body too large"));
+    const checkpoint = f.manager.getEntries().find(entry => entry.type === "compaction");
+    assert.ok(checkpoint && checkpoint.type === "compaction");
+    assert.equal(checkpoint.fromHook, true);
+    assert.equal(f.session.autoCompactionEnabled, false);
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+    assert.equal(record.phase, "completed");
+  } finally { await f.close(); }
+});
+
+test("a repeated 413 does not start a second compact-and-retry loop", async () => {
+  const f = await fixture({ chat: () => ({ ...response(), content: [], stopReason: "error", errorMessage: '413 "Request body too large"' }) });
+  try {
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context. ".repeat(2_000), timestamp: 1 });
+    const first = response("Earlier answer."); first.timestamp = 2; first.usage.input = 10_000; first.usage.totalTokens = 10_001;
+    f.manager.appendMessage(first);
+    f.manager.appendMessage({ role: "user", content: "More recent context. ".repeat(1_700), timestamp: 3 });
+    const recent = response("Recent answer."); recent.timestamp = 4; recent.usage.input = 15_000; recent.usage.totalTokens = 15_001;
+    f.manager.appendMessage(recent);
+    f.session.refreshContext();
+
+    await f.session.prompt("This will still be too large.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary", "chat"]);
+  } finally { await f.close(); }
+});
+
+test("automatic off leaves a 413 untouched for manual recovery", async () => {
+  const f = await fixture({ automatic: false, chat: () => ({ ...response(), content: [], stopReason: "error", errorMessage: '413 "Request body too large"' }) });
+  try {
+    f.manager.appendMessage({ role: "user", content: "Earlier context. ".repeat(2_000), timestamp: 1 });
+    f.manager.appendMessage(response("Earlier answer."));
+    f.session.refreshContext();
+    await f.session.prompt("Continue.");
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat"]);
+    assert.equal(f.manager.getEntries().some(entry => entry.type === "compaction"), false);
+  } finally { await f.close(); }
+});
+
+test("a resumed session whose last response was a 413 compacts before the next request", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context. ".repeat(2_000), timestamp: 1 });
+    const first = response("Earlier answer."); first.timestamp = 2; first.usage.input = 10_000; first.usage.totalTokens = 10_001;
+    f.manager.appendMessage(first);
+    f.manager.appendMessage({ role: "user", content: "More recent context. ".repeat(1_700), timestamp: 3 });
+    const failed = { ...response(), content: [], stopReason: "error" as const, errorMessage: '413 "Request body too large"' };
+    failed.timestamp = 4;
+    f.manager.appendMessage(failed);
+    f.session.refreshContext();
+
+    await f.session.prompt("Continue after restarting pi.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["summary", "chat"]);
+    assert.equal(f.session.getLastAssistantText(), "OK");
+    assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes("Request body too large"));
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+  } finally { await f.close(); }
+});

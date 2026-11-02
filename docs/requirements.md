@@ -111,7 +111,9 @@ Automatic compaction requires both:
 
 Equivalently, the actual automatic trigger point is the greater of the fixed minimum and the resolved configured trigger in tokens. This does not rewrite the user's saved setting.
 
-When automatic compaction is switched off, no automatic compaction runs, including pi's native automatic compaction. The switch persists across restarts.
+When automatic compaction is switched off, no automatic compaction runs, including pi's native automatic compaction and provider-overflow recovery. The switch persists across restarts.
+
+Recognize provider context and request-size overflow errors, including HTTP 413 responses such as `Request body too large`, even when estimated context usage is below the configured trigger. With automatic compaction enabled, omit the failed assistant attempt, compact once, and retry the interrupted turn once without requiring a new user prompt. Do not loop after a second overflow; report it and leave manual `/compact` available.
 
 Preserve pi's existing manual `/compact` behavior. The automatic switch does not disable manual compaction. The fixed automatic minimum does not prevent manual compaction.
 
@@ -215,6 +217,7 @@ Use the host's available context accounting and model-capacity metadata when imp
 14. Recover a corrupt config only with consent; if refused, disable the entire plugin until explicitly re-enabled. In non-interactive mode, report the error and stop the request.
 15. Apply the same automatic rules through TUI, script/non-interactive, and RPC execution.
 16. Install from the public GitHub repository using pi's standard Git-source package support, with English instructions and the MIT license; no npm package is required.
+17. Recover an HTTP 413 or other recognized provider overflow once by compacting and retrying the interrupted turn, without waiting for the token trigger; do not loop on a repeated overflow, and do not recover when automatic compaction is off.
 
 ## Implementation checks
 
