@@ -324,6 +324,7 @@ test("a 413 request-body overflow compacts and retries the failed turn once", as
     assert.equal(f.session.autoCompactionEnabled, false);
     const [record] = await attempts(f.root);
     assert.equal(record.reason, "overflow");
+    assert.equal(record.willRetry, true);
     assert.equal(record.phase, "completed");
   } finally { await f.close(); }
 });
@@ -378,5 +379,257 @@ test("a resumed session whose last response was a 413 compacts before the next r
     assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes("Request body too large"));
     const [record] = await attempts(f.root);
     assert.equal(record.reason, "overflow");
+  } finally { await f.close(); }
+});
+
+test("a recoverable length stop compacts and retries the truncated turn once", async () => {
+  let chats = 0;
+  const f = await fixture({ chat: () => chats++ === 0
+    ? { ...response("Partial answer"), stopReason: "length" }
+    : response("Recovered after truncation.") });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.seed();
+    await f.session.prompt("Continue after the truncation.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary", "chat"]);
+    assert.equal(f.session.getLastAssistantText(), "Recovered after truncation.");
+    assert.ok(!f.session.sessionManager.buildSessionProjection().messages.some(message => message.role === "assistant" && message.stopReason === "length"));
+    assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes("Partial answer"));
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+    assert.equal(record.willRetry, true);
+    assert.equal(record.phase, "completed");
+  } finally { await f.close(); }
+});
+
+test("a truncated tool call and its failed results are omitted together", async () => {
+  let chats = 0;
+  const f = await fixture({ tool: true, chat: () => chats++ === 0
+    ? { ...response(), stopReason: "length", content: [{ type: "toolCall", id: "truncated", name: "big_result", arguments: {} }] }
+    : response("Recovered after the truncated tool call.") });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.seed();
+    await f.session.prompt("Use the tool and continue.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary", "chat"]);
+    const retried = f.session.sessionManager.buildSessionProjection().messages;
+    assert.ok(!retried.some(message => message.role === "assistant" && message.content.some(block => block.type === "toolCall")));
+    assert.ok(!retried.some(message => message.role === "toolResult" && message.toolCallId === "truncated"));
+    assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes("truncated"));
+  } finally { await f.close(); }
+});
+
+test("a repeated length stop does not start a second compact-and-retry loop", async () => {
+  const f = await fixture({ chat: () => ({ ...response(), stopReason: "length", content: [] }) });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.seed();
+    await f.session.prompt("This will still be truncated.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary", "chat"]);
+    assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 1);
+  } finally { await f.close(); }
+});
+
+test("a resumed session whose final response was truncated compacts before the next request", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context. ".repeat(2_000), timestamp: 1 });
+    const previous = response("Earlier answer."); previous.timestamp = 2; previous.usage.input = 10_000; previous.usage.totalTokens = 10_001;
+    f.manager.appendMessage(previous);
+    f.manager.appendMessage({ role: "user", content: "More recent context. ".repeat(1_700), timestamp: 3 });
+    const recent = response("Recent answer."); recent.timestamp = 4; recent.usage.input = 15_000; recent.usage.totalTokens = 15_001;
+    f.manager.appendMessage(recent);
+    const truncated = { ...response(), stopReason: "length" as const, content: [{ type: "toolCall" as const, id: "truncated", name: "big_result", arguments: {} }], timestamp: 5 };
+    f.manager.appendMessage(truncated);
+    f.manager.appendMessage({ role: "toolResult", toolCallId: "truncated", toolName: "big_result", content: [{ type: "text", text: "failed" }], isError: true, timestamp: 6 });
+    f.session.refreshContext();
+
+    await f.session.prompt("Continue after restarting pi.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["summary", "chat"]);
+    assert.ok(!JSON.stringify(f.calls.at(-1)!.context).includes('"truncated"'));
+    assert.ok(!f.session.sessionManager.buildSessionProjection().messages.some(message => message.role === "toolResult" && message.toolCallId === "truncated"));
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+    assert.equal(record.willRetry, true);
+  } finally { await f.close(); }
+});
+
+test("an overflow from a different model does not compact the larger model's request", async () => {
+  const f = await fixture({ chat: () => response("Answer on the larger model.") });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 100_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context.", timestamp: 1 });
+    const failed = { ...response(), content: [], stopReason: "error" as const, errorMessage: '413 "Request body too large"', timestamp: 2 };
+    f.manager.appendMessage(failed);
+    f.session.refreshContext();
+    await f.session.setModel(f.runtime.getModel("compactor-test", "large")!);
+
+    await f.session.prompt("Continue on the larger model.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat"]);
+    assert.equal(f.session.getLastAssistantText(), "Answer on the larger model.");
+    assert.equal(f.manager.getEntries().some(entry => entry.type === "compaction" || entry.type === "context_edit"), false);
+  } finally { await f.close(); }
+});
+
+test("a successful response that silently exceeded the window is compacted but preserved", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 200_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Silent overflow context. ".repeat(10_000), timestamp: 1 });
+    const silent = response("Silent overflow answer. ".repeat(30_000));
+    silent.timestamp = 2; silent.usage.input = 250_000; silent.usage.totalTokens = 250_001;
+    f.manager.appendMessage(silent);
+    f.session.refreshContext();
+
+    await f.session.prompt("Continue after the silent overflow.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["summary", "chat"]);
+    // A completed response is never omitted; only failed attempts are.
+    assert.equal(f.manager.getEntries().some(entry => entry.type === "context_edit"), false);
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+    assert.equal(record.willRetry, false);
+  } finally { await f.close(); }
+});
+
+test("an overflow behind a newer compaction does not compact again", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 100_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context.", timestamp: 1 });
+    const failed = { ...response(), content: [], stopReason: "error" as const, errorMessage: '413 "Request body too large"', timestamp: 2 };
+    const failedId = f.manager.appendMessage(failed);
+    f.manager.appendCompaction("Earlier checkpoint", failedId, 50_000, { plugin: "test" }, true);
+    f.session.refreshContext();
+
+    await f.session.prompt("Continue after the checkpoint.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat"]);
+    assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 1);
+    assert.equal(f.manager.getEntries().some(entry => entry.type === "context_edit"), false);
+  } finally { await f.close(); }
+});
+
+test("overflow recovery preserves the new user prompt instead of summarizing it", async () => {
+  const f = await fixture({ chat: () => response("Answered the large prompt.") });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context.", timestamp: 1 });
+    const previous = response("Earlier answer."); previous.timestamp = 2; previous.usage.input = 10_000; previous.usage.totalTokens = 10_001;
+    f.manager.appendMessage(previous);
+    const failed = { ...response(), content: [], stopReason: "error" as const, errorMessage: '413 "Request body too large"', timestamp: 3 };
+    f.manager.appendMessage(failed);
+    f.session.refreshContext();
+    const marker = "PROMPT_MARKER_7f3c";
+    const prompt = `${marker} Large prompt. `.repeat(12_000);
+
+    await f.session.prompt(prompt);
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["summary", "chat"]);
+    const sent = f.calls.at(-1)!.context.messages.findLast(message => message.role === "user");
+    assert.ok(JSON.stringify(sent).includes(marker));
+    const promptEntry = f.manager.getEntries().find(entry => entry.type === "message" && entry.message.role === "user" && JSON.stringify(entry.message.content).includes(marker));
+    const checkpoint = f.manager.getEntries().find(entry => entry.type === "compaction");
+    assert.ok(promptEntry && checkpoint && checkpoint.type === "compaction");
+    assert.equal(checkpoint.firstKeptEntryId, promptEntry.id);
+  } finally { await f.close(); }
+});
+
+test("a pre-prompt overflow recovery leaves the new turn one compact-and-retry attempt", async () => {
+  let chats = 0;
+  const f = await fixture({ chat: () => chats++ === 0
+    ? { ...response(), content: [], stopReason: "error", errorMessage: '413 "Request body too large"' }
+    : response("Recovered on the second attempt.") });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.manager.appendMessage({ role: "user", content: "Earlier context. ".repeat(2_000), timestamp: 1 });
+    const first = response("Earlier answer."); first.timestamp = 2; first.usage.input = 10_000; first.usage.totalTokens = 10_001;
+    f.manager.appendMessage(first);
+    f.manager.appendMessage({ role: "user", content: "More recent context. ".repeat(1_700), timestamp: 3 });
+    const recent = response("Recent answer."); recent.timestamp = 4; recent.usage.input = 15_000; recent.usage.totalTokens = 15_001;
+    f.manager.appendMessage(recent);
+    const failed = { ...response(), content: [], stopReason: "error" as const, errorMessage: '413 "Request body too large"', timestamp: 5 };
+    f.manager.appendMessage(failed);
+    f.session.refreshContext();
+
+    await f.session.prompt("Continue after restarting pi.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["summary", "chat", "summary", "chat"]);
+    assert.equal(f.session.getLastAssistantText(), "Recovered on the second attempt.");
+    assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 2);
+  } finally { await f.close(); }
+});
+
+test("a successful response that silently exceeded the window is compacted after the run", async () => {
+  const f = await fixture({ chat: () => {
+    const silent = response("Live silent overflow answer. ".repeat(5_000));
+    silent.usage.input = 250_000; silent.usage.totalTokens = 250_001;
+    return silent;
+  } });
+  try {
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 200_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.seed();
+    await f.session.prompt("Continue after the silent overflow.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary"]);
+    assert.equal(f.manager.getEntries().some(entry => entry.type === "context_edit"), false);
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+    assert.equal(record.willRetry, false);
+    assert.equal(record.phase, "completed");
+  } finally { await f.close(); }
+});
+
+test("a prompt that cannot be compacted is paused instead of being summarized away", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    const prompt = "Oversized first prompt. ".repeat(20_000);
+    await f.session.prompt(prompt);
+
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.manager.getEntries().some(entry => entry.type === "compaction"), false);
+    assert.ok(!f.session.sessionManager.buildSessionProjection().messages.some(message => message.role === "compactionSummary"));
+    assert.ok(f.controller.active);
+  } finally { await f.close(); }
+});
+
+test("a virtual model selection uses its own settings and recovers overflow", async () => {
+  let chats = 0;
+  const f = await fixture({ virtual: true, chat: () => chats++ === 0
+    ? { ...response(), content: [], stopReason: "error", errorMessage: '413 "Request body too large"' }
+    : response("Recovered under the virtual model.") });
+  try {
+    assert.equal(f.session.model?.id, "virtual-auto");
+    await f.controller.edit({ scope: "session" }, "trigger", { unit: "tokens", value: 150_000 }, f.session.model!);
+    await f.controller.edit({ scope: "session" }, "target", { unit: "tokens", value: 10_000 }, f.session.model!);
+    f.seed();
+    await f.session.prompt("Continue under the virtual model.");
+
+    assert.deepEqual(f.calls.map(c => c.kind), ["chat", "summary", "chat"]);
+    assert.equal(f.session.getLastAssistantText(), "Recovered under the virtual model.");
+    assert.ok(f.routes.length >= 2);
+    // The continuation is routed as a retry of the failed physical request.
+    assert.deepEqual(f.routes.map(route => route.reason), ["user", "retry"]);
+    assert.equal(f.routes[1]!.failed, true);
+    const [record] = await attempts(f.root);
+    assert.equal(record.reason, "overflow");
+    assert.equal(record.willRetry, true);
+    assert.equal(record.trigger, 150_000);
+    assert.equal(record.target, 10_000);
   } finally { await f.close(); }
 });
