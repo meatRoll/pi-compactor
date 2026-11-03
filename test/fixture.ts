@@ -10,7 +10,7 @@ export function response(text = "OK"): AssistantMessage {
   return { role: "assistant", api: "openai-completions", provider: "compactor-test", model: "model", timestamp: Date.now(), stopReason: "stop", content: [{ type: "text", text }], usage: { input: 100, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 101, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
 type TestThinkingLevelMap = { off?: string | null; minimal?: string | null; low?: string | null; medium?: string | null; high?: string | null; xhigh?: string | null; max?: string | null };
-export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean; installOnReload?: boolean; maxTokens?: number; reasoning?: boolean; thinkingLevelMap?: TestThinkingLevelMap } = {}) {
+export async function fixture(options: { summary?: () => AssistantMessage; chat?: (index: number) => AssistantMessage; corrupt?: boolean; automatic?: boolean; tool?: boolean; mode?: ExtensionContext["mode"]; reset?: boolean; retry?: boolean; unknownCapacity?: boolean; installOnReload?: boolean; maxTokens?: number; reasoning?: boolean; virtual?: boolean; thinkingLevelMap?: TestThinkingLevelMap } = {}) {
   const root = await mkdtemp(join(tmpdir(), "compactor-sdk-"));
   const store = new ConfigStore(root);
   await store.update(c => { c.global.all = { trigger: { unit: "tokens", value: 30_000 }, target: { unit: "tokens", value: 5_000 } }; c.automatic = options.automatic ?? true; });
@@ -20,7 +20,10 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
   let chats = 0;
   runtime.registerProvider("compactor-test", {
     api: "openai-completions", baseUrl: "https://example.invalid", apiKey: "test-key",
-    models: [{ id: "model", name: "Test", contextWindow: 200_000, maxTokens: options.maxTokens ?? 8_192, reasoning: options.reasoning ?? false, ...(options.thinkingLevelMap ? { thinkingLevelMap: options.thinkingLevelMap } : {}), input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    models: [
+      { id: "model", name: "Test", contextWindow: 200_000, maxTokens: options.maxTokens ?? 8_192, reasoning: options.reasoning ?? false, ...(options.thinkingLevelMap ? { thinkingLevelMap: options.thinkingLevelMap } : {}), input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      { id: "large", name: "Large Test", contextWindow: 400_000, maxTokens: 8_192, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    ],
     streamSimple: (_model, context, streamOptions) => {
       const summary = getCurrentSystemPrompt(context.messages).includes("Create a concise context checkpoint");
       calls.push({ kind: summary ? "summary" : "chat", context: structuredClone(context), maxTokens: streamOptions?.maxTokens, reasoning: streamOptions?.reasoning });
@@ -30,6 +33,14 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
       else stream.push({ type: "done", reason: message.stopReason as "stop" | "length" | "toolUse", message });
       stream.end();
       return stream;
+    },
+  });
+  const routes: { reason: string; failed: boolean }[] = [];
+  if (options.virtual) runtime.registerVirtualModel({
+    provider: "compactor-test", id: "virtual-auto", name: "Virtual Auto", contextWindow: 200_000, maxTokens: 8_192, input: ["text"],
+    route: request => {
+      routes.push({ reason: request.reason, failed: request.failed !== undefined });
+      return { model: runtime.getModel("compactor-test", "model")!, thinkingLevel: "off" };
     },
   });
   let controller!: Compactor;
@@ -49,13 +60,14 @@ export async function fixture(options: { summary?: () => AssistantMessage; chat?
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, systemPrompt: "Test system", noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [factory] });
   await loader.reload();
   const manager = SessionManager.inMemory(root);
-  const { session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model: options.unknownCapacity ? { ...runtime.getModel("compactor-test", "model")!, contextWindow: 0 } : runtime.getModel("compactor-test", "model"), settingsManager: settings, sessionManager: manager, resourceLoader: loader, noTools: options.tool ? "builtin" : "all" });
+  const selectedModel = options.virtual ? runtime.getModel("compactor-test", "virtual-auto")! : runtime.getModel("compactor-test", "model")!;
+  const { session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model: options.unknownCapacity ? { ...selectedModel, contextWindow: 0 } : selectedModel, settingsManager: settings, sessionManager: manager, resourceLoader: loader, noTools: options.tool ? "builtin" : "all" });
   const errors: string[] = [];
   const notices: string[] = [];
   const statuses = new Map<string, string | undefined>();
   const ui = { confirm: async () => options.reset ?? false, notify: (message: string) => notices.push(message), setStatus: (key: string, text: string | undefined) => statuses.set(key, text), theme: { style: (text: string) => text } } as unknown as ExtensionUIContext;
   await session.bindExtensions({ mode: options.mode ?? "print", ...(options.mode === "tui" ? { uiContext: ui } : {}), onError: error => errors.push(error.error) });
-  return { root, store, runtime, calls, session, manager, get controller() { return controller; }, errors, notices, statuses,
+  return { root, store, runtime, calls, routes, session, manager, get controller() { return controller; }, errors, notices, statuses,
     async install() { installed = true; await session.reload(); },
     seed() {
       manager.appendMessage({ role: "user", content: "Earlier conversation. ".repeat(12_000), timestamp: 1 });

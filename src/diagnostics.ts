@@ -13,6 +13,8 @@ export interface CompactionAttempt {
   phase: "attempt" | "post-check" | "completed";
   /** Why automatic compaction ran. Older records may omit it. */
   reason?: "threshold" | "overflow";
+  /** Whether pi will continue the interrupted turn after this checkpoint. */
+  willRetry?: boolean;
   sessionId: string;
   sessionFile?: string;
   cwd: string;

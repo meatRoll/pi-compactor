@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { parseColor } from "@earendil-works/pi-tui";
-import { getAgentDir, getPackageDir, SessionManager, type AgentSession, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getAgentDir, getPackageDir, SessionManager, type AgentSession, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionProjection, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { defaults, emptyLayer, footer, getLayer, resolve, setField, sourceLabel, type Amount, type Configuration, type Effective, type Field, type Layer, type ModelIdentity, type Preferences, type Selection } from "./config.ts";
-import { CompactionError, compactToTarget, estimateProjection, isOverflowError, outcomeMessage, report, type CompactionResult } from "./compaction.ts";
+import { CompactionError, compactToTarget, estimateProjection, isOverflowError, isOverflowMessage, isRecoverableFailure, outcomeMessage, report, type CompactionReason, type CompactionResult } from "./compaction.ts";
 import { DiagnosticsLog, type CompactionAttempt } from "./diagnostics.ts";
 import { installHostBridge } from "./host.ts";
 import { Lifecycle } from "./lifecycle.ts";
@@ -28,7 +30,8 @@ export class Compactor {
   private listeners: (() => void)[] = [];
   private startupError?: Error;
   private lastWarning?: string;
-  private overflowEntryId?: string;
+  private routed?: { selection: NonNullable<AgentSession["model"]>; model: NonNullable<AgentSession["model"]>; thinkingLevel?: ThinkingLevel };
+  private overflow?: { entryId: string; message: AssistantMessage; model?: NonNullable<AgentSession["model"]>; thinkingLevel?: ThinkingLevel; kind: "overflow" | "length" | "silent"; willRetry: boolean };
   private overflowRecoveryAttempted = false;
   constructor(readonly pi: ExtensionAPI, agentDir = getAgentDir()) {
     this.store = new ConfigStore(agentDir);
@@ -39,6 +42,10 @@ export class Compactor {
     if (!model || !(model.contextWindow > 0)) throw new Error("Select a model with a known context capacity.");
     return resolve(this.configuration, this.repository, this.session, model);
   }
+  /** Resolve settings for the selection, using the routed physical model's capacity. */
+  private requestEffective(selection: Pick<ModelIdentity, "provider" | "id">, routed: Pick<ModelIdentity, "contextWindow">) {
+    return resolve(this.configuration, this.repository, this.session, { provider: selection.provider, id: selection.id, contextWindow: routed.contextWindow });
+  }
   async start(event: SessionStartEvent, ctx: ExtensionContext): Promise<void> {
     this.context = ctx;
     this.host = this.bridge.get(ctx);
@@ -46,7 +53,8 @@ export class Compactor {
     this.host.settingsManager.applyOverrides({ compaction: { enabled: false } });
     this.active = true;
     this.startupError = undefined;
-    this.overflowEntryId = undefined;
+    this.routed = undefined;
+    this.overflow = undefined;
     this.overflowRecoveryAttempted = false;
     this.attachGate(ctx);
     let canReset = false;
@@ -80,7 +88,14 @@ export class Compactor {
     }
     this.listeners.push(
       this.pi.on("model_select", (_event, context) => { this.context = context; this.warn(); this.updateStatus(); }),
-      this.pi.on("session_tree", (_event, context) => { this.context = context; this.session = currentSession(context); this.updateStatus(); }),
+      this.pi.on("session_tree", (_event, context) => {
+        this.context = context;
+        this.session = currentSession(context);
+        this.routed = undefined;
+        this.overflow = undefined;
+        this.overflowRecoveryAttempted = false;
+        this.updateStatus();
+      }),
       this.pi.on("session_before_compact", event => event.reason === "manual" ? undefined : { cancel: true }),
       this.pi.on("session_compact", () => this.updateStatus()),
       this.pi.on("message_start", event => {
@@ -90,9 +105,26 @@ export class Compactor {
       this.pi.on("turn_end", event => {
         this.updateStatus();
         const message = event.message;
-        if (message.role === "assistant" && isOverflowError(message)) this.overflowEntryId = event.messageEntryId;
-        else this.overflowEntryId = undefined;
-        if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "length") this.overflowRecoveryAttempted = false;
+        if (message.role !== "assistant") { this.overflow = undefined; return; }
+        // A recoverable length stop is an overflow signal in pi: output ended
+        // below the model's limit, so compaction can make room and retry. A
+        // successful response can also overflow silently when its reported
+        // usage exceeds the window; pi compacts it without retrying.
+        const model = this.messageModel(message) ?? this.routed?.model ?? this.host?.model ?? this.context?.model;
+        const likely = model && (message.stopReason === "error" || message.stopReason === "length" ||
+          (message.stopReason === "stop" && message.usage.input + message.usage.cacheRead > model.contextWindow));
+        const candidate = likely && this.host
+          ? this.classifyOverflow(message, model, this.host.sessionManager.buildSessionProjection())
+          : undefined;
+        this.overflow = candidate ? {
+          entryId: candidate.entryId,
+          message,
+          model,
+          thinkingLevel: message.thinkingLevel ?? this.routed?.thinkingLevel,
+          kind: candidate.kind,
+          willRetry: candidate.willRetry,
+        } : undefined;
+        if (message.stopReason !== "error" && message.stopReason !== "length") this.overflowRecoveryAttempted = false;
       }),
       // Native overflow recovery is disabled with native automatic compaction. Recover here
       // after the run so the failed request can be compacted and retried once.
@@ -111,100 +143,206 @@ export class Compactor {
       if (controller.startupError) throw paused(controller.startupError);
       // Users may toggle pi's native /settings switch while the plugin is active.
       host.settingsManager.applyOverrides({ compaction: { enabled: false } });
-      const effective = controller.effective(next.model);
+      // host.model is the session selection (possibly virtual); next.model is the
+      // physical model pi routed this request to.
+      controller.routed = { selection: host.model ?? next.model, model: next.model, thinkingLevel: next.thinkingLevel };
+      const effective = controller.requestEffective(controller.routed.selection, next.model);
       const projection = host.sessionManager.buildSessionProjection();
       let before = estimateProjection(projection, host.sessionManager.getBranch());
       controller.updateStatus(before);
       // Native pi checks the previous response for overflow before a new prompt.
-      // Do the same, because native automatic compaction is disabled here.
+      // Do the same, because native automatic compaction is disabled here. A
+      // successful response that silently exceeded the window is compacted
+      // without omission; a failed one is omitted before the retry.
       const lastAssistant = projection.messages.findLast(message => message.role === "assistant");
-      const overflow = controller.configuration.automatic && !controller.overflowRecoveryAttempted &&
-        lastAssistant?.role === "assistant" && isOverflowError(lastAssistant);
+      const overflow = controller.configuration.automatic && lastAssistant
+        ? controller.classifyOverflow(lastAssistant, next.model, projection)
+        : undefined;
+      if (overflow?.willRetry && controller.overflowRecoveryAttempted) {
+        const error = new Error(overflow.kind === "length"
+          ? "Truncated response recovery failed after one compact-and-retry attempt. Try /compact or reduce context."
+          : "Context overflow recovery failed after one compact-and-retry attempt. Try /compact or reduce context.");
+        report(ctx, error.message, "error");
+        throw paused(error);
+      }
       if (!controller.configuration.automatic || (!overflow && before < effective.triggerPoint)) return next;
       if (effective.invalid) {
         report(ctx, `Compactor: ${effective.invalid} Fix the configuration with /compactor.`, "error");
         throw paused(new Error(effective.invalid));
       }
-      const reason = overflow ? "overflow" as const : "threshold" as const;
+      const reason: CompactionReason = overflow ? "overflow" : "threshold";
+      const willRetry = overflow?.willRetry ?? false;
       if (overflow) {
-        controller.overflowRecoveryAttempted = true;
-        const entry = projection.entries.find(candidate => candidate.messages.includes(lastAssistant));
-        if (entry) {
-          host.sessionManager.appendContextEdit(entry.sourceEntry.id, null);
-          host.refreshContext();
+        if (willRetry) {
+          try {
+            controller.omitAttempt(host, overflow.entryId, lastAssistant!);
+          } catch (error) {
+            report(ctx, asError(error).message, "error");
+            throw paused(error);
+          }
           before = estimateProjection(host.sessionManager.buildSessionProjection(), host.sessionManager.getBranch());
+          report(ctx, "Context overflow: compacting before retrying…");
+        } else {
+          report(ctx, "Context overflow: compacting before continuing…");
         }
-        report(ctx, "Context overflow: compacting before retrying…");
       }
       const started = Date.now();
       let result: CompactionResult;
       try {
         if (!overflow) report(ctx, "Compacting context…");
-        result = await compactToTarget(host, ctx, effective, before, signal, next.model, next.thinkingLevel, reason);
+        result = await compactToTarget(host, ctx, effective, before, signal, next.model, next.thinkingLevel, reason, willRetry);
       } catch (error) {
-        await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "attempt", error }, reason);
+        await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "attempt", error }, reason, willRetry);
         report(ctx, asError(error).message, "error");
         throw paused(error);
       }
       if (result.after >= effective.triggerPoint) {
         const error = new Error("Compacted context is still at the trigger. Request paused; adjust settings or compact manually.");
-        await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "post-check", error, result }, reason);
+        await controller.diagnose(ctx, next.model, effective, before, started, { ok: false, phase: "post-check", error, result }, reason, willRetry);
         report(ctx, error.message, "error");
         throw paused(error);
       }
       controller.updateStatus(result.after);
       report(ctx, outcomeMessage(before, result.after, effective.target.tokens));
-      await controller.diagnose(ctx, next.model, effective, before, started, { ok: true, phase: "completed", result }, reason);
+      await controller.diagnose(ctx, next.model, effective, before, started, { ok: true, phase: "completed", result }, reason, willRetry);
       return { ...next, context: { ...next.context, messages: host.sessionManager.buildSessionProjection().messages } };
     };
     host.agent.prepareRequest = gate;
     this.detachGate = () => { if (host.agent.prepareRequest === gate) host.agent.prepareRequest = previous; };
   }
+  private messageModel(message: AssistantMessage) {
+    return this.context?.modelRegistry.find(message.provider, message.model);
+  }
+  /**
+   * Classify the previous assistant response the way pi's `_checkCompaction()`
+   * does. Overflow from a different model, an attempt older than the latest
+   * compaction, or usage that no longer describes the projected context must
+   * not trigger another compaction.
+   */
+  private classifyOverflow(
+    message: AssistantMessage,
+    model: NonNullable<AgentSession["model"]>,
+    projection: SessionProjection,
+  ): { entryId: string; willRetry: boolean; kind: "overflow" | "length" | "silent" } | undefined {
+    const host = this.host;
+    if (!host || message.provider !== model.provider || message.model !== model.id) return undefined;
+    const projected = projection.entries.find(entry => entry.messages.includes(message));
+    if (!projected) return undefined;
+    const branch = host.sessionManager.getBranch();
+    const index = branch.findIndex(entry => entry.id === projected.sourceEntry.id);
+    if (index < 0) return undefined;
+    // Use branch order rather than pi's timestamp comparison: equal-millisecond
+    // timestamps (common with fast local providers) must not mark a new error as
+    // older than the checkpoint that preceded it.
+    const latestCompaction = branch.findLastIndex(entry => entry.type === "compaction");
+    if (latestCompaction > index) return undefined;
+    const entriesAfter = branch.slice(index + 1);
+    const hasContextEdit = entriesAfter.some(entry => entry.type === "context_edit");
+    const explicit = isOverflowError(message);
+    const failed = isRecoverableFailure(message, model.maxTokens);
+    const usageOverflow = !hasContextEdit && isOverflowMessage(message, model.contextWindow);
+    if (!failed && !usageOverflow) return undefined;
+    // pi only retries after a failed attempt. A completed response that silently
+    // overflowed is compacted in place and must be preserved.
+    const willRetry = message.stopReason !== "stop";
+    return { entryId: projected.sourceEntry.id, willRetry, kind: willRetry ? (explicit ? "overflow" : "length") : "silent" };
+  }
+  /**
+   * Persistently omit a failed attempt and its matching tool results, mirroring
+   * pi's `_omitRecoveryAttempt()`. An unpaired tool result fails the next request.
+   */
+  private omitAttempt(host: AgentSession, entryId: string, message: AssistantMessage): void {
+    const projection = host.sessionManager.buildSessionProjection();
+    const sources = new Map<AgentMessage, string>();
+    for (const entry of projection.entries) for (const projected of entry.messages) sources.set(projected, entry.sourceEntry.id);
+    const index = projection.messages.findIndex(projected => projected === message || sources.get(projected) === entryId);
+    const toolCallIds = new Set(message.content.flatMap(block => block.type === "toolCall" ? [block.id] : []));
+    const targets = new Set([entryId]);
+    for (let i = index + 1; index >= 0 && i < projection.messages.length; i++) {
+      const projected = projection.messages[i]!;
+      if (projected.role === "assistant") break;
+      if (projected.role !== "toolResult" || !toolCallIds.has(projected.toolCallId)) continue;
+      const target = sources.get(projected);
+      if (!target) throw new Error("Cannot persist recovery omission because a projected message has no source entry.");
+      targets.add(target);
+    }
+    for (const target of targets) host.sessionManager.appendContextEdit(target, null);
+    host.refreshContext();
+  }
+  private canContinue(host: AgentSession): boolean {
+    const messages = convertToLlm(host.sessionManager.buildSessionProjection().messages);
+    return messages.some(message => message.role !== "system") &&
+      (messages.at(-1)?.role !== "assistant" || host.agent.hasQueuedMessages());
+  }
+  /** Seed pi's failed-response routing hint for the continuation request. */
+  private markRetry(host: AgentSession, message: AssistantMessage): void {
+    // pi has no public setter. Assign only when the host still carries the
+    // field so a future rename degrades to a normal continuation.
+    const state = host as unknown as { _failedResponse?: AssistantMessage };
+    if ("_failedResponse" in state) state._failedResponse = message;
+  }
   private async recoverOverflow(): Promise<{ continue: boolean } | undefined> {
-    const entryId = this.overflowEntryId;
-    this.overflowEntryId = undefined;
+    const overflow = this.overflow;
+    this.overflow = undefined;
     const ctx = this.context;
     const host = this.host;
-    if (!entryId || !ctx || !host || !this.active || this.startupError || !this.configuration.automatic) return;
-    if (this.overflowRecoveryAttempted) {
-      report(ctx, "Context overflow recovery failed after one compact-and-retry attempt. Try /compact or reduce context.", "error");
+    if (!overflow || !ctx || !host || !this.active || this.startupError || !this.configuration.automatic) return;
+    if (overflow.willRetry && this.overflowRecoveryAttempted) {
+      report(ctx, overflow.kind === "length"
+        ? "Truncated response recovery failed after one compact-and-retry attempt. Try /compact or reduce context."
+        : "Context overflow recovery failed after one compact-and-retry attempt. Try /compact or reduce context.", "error");
       return;
     }
-    const model = host.model ?? ctx.model;
+    const model = overflow.model ?? this.routed?.model ?? host.model ?? ctx.model;
     if (!model || !(model.contextWindow > 0)) return;
+    // pi skips overflow recovery when the selection no longer matches the model
+    // that produced the message; a larger model may not need compaction. Compare
+    // the selection captured for this request, not the physical route: a virtual
+    // router may legitimately choose another physical model for the continuation.
+    const selection = host.model ?? ctx.model;
+    if (selection && this.routed && (selection.provider !== this.routed.selection.provider || selection.id !== this.routed.selection.id)) return;
     let effective: Effective;
-    try { effective = this.effective(model); } catch (error) { report(ctx, asError(error).message, "error"); return; }
+    try { effective = this.requestEffective(selection ?? model, model); } catch (error) { report(ctx, asError(error).message, "error"); return; }
     if (effective.invalid) {
       report(ctx, `Compactor: ${effective.invalid} Fix the configuration with /compactor.`, "error");
       return;
     }
-    this.overflowRecoveryAttempted = true;
-    // The failed assistant attempt is not useful context and would make the
-    // continuation invalid, so omit it as native overflow recovery does.
-    try {
-      host.sessionManager.appendContextEdit(entryId, null);
-      host.refreshContext();
-    } catch (error) {
-      report(ctx, asError(error).message, "error");
-      return;
+    if (overflow.willRetry) {
+      this.overflowRecoveryAttempted = true;
+      try {
+        this.omitAttempt(host, overflow.entryId, overflow.message);
+      } catch (error) {
+        report(ctx, asError(error).message, "error");
+        return;
+      }
     }
     const before = estimateProjection(host.sessionManager.buildSessionProjection(), host.sessionManager.getBranch());
     const started = Date.now();
     try {
-      report(ctx, "Context overflow: compacting before retrying…");
-      const result = await compactToTarget(host, ctx, effective, before, undefined, model, host.thinkingLevel, "overflow");
+      report(ctx, overflow.kind === "length"
+        ? "Truncated response: compacting before retrying…"
+        : overflow.kind === "silent"
+          ? "Context overflow: compacting the completed response…"
+          : "Context overflow: compacting before retrying…");
+      const result = await compactToTarget(host, ctx, effective, before, undefined, model, overflow.thinkingLevel ?? host.thinkingLevel, "overflow", overflow.willRetry);
       if (result.after >= effective.triggerPoint) {
         const error = new Error("Compacted context is still at the trigger. Request paused; adjust settings or compact manually.");
-        await this.diagnose(ctx, model, effective, before, started, { ok: false, phase: "post-check", error, result }, "overflow");
+        await this.diagnose(ctx, model, effective, before, started, { ok: false, phase: "post-check", error, result }, "overflow", overflow.willRetry);
         report(ctx, error.message, "error");
         return;
       }
       this.updateStatus(result.after);
       report(ctx, outcomeMessage(before, result.after, effective.target.tokens));
-      await this.diagnose(ctx, model, effective, before, started, { ok: true, phase: "completed", result }, "overflow");
+      await this.diagnose(ctx, model, effective, before, started, { ok: true, phase: "completed", result }, "overflow", overflow.willRetry);
+      if (!overflow.willRetry) return;
+      if (!this.canContinue(host)) {
+        report(ctx, "Compacted context cannot continue the interrupted turn. Try /compact or send a new prompt.", "error");
+        return;
+      }
+      this.markRetry(host, overflow.message);
       return { continue: true };
     } catch (error) {
-      await this.diagnose(ctx, model, effective, before, started, { ok: false, phase: "attempt", error }, "overflow");
+      await this.diagnose(ctx, model, effective, before, started, { ok: false, phase: "attempt", error }, "overflow", overflow.willRetry);
       report(ctx, asError(error).message, "error");
       return;
     }
@@ -216,7 +354,8 @@ export class Compactor {
     before: number,
     started: number,
     outcome: { ok: boolean; phase: CompactionAttempt["phase"]; result?: CompactionResult; error?: unknown },
-    reason: "threshold" | "overflow" = "threshold",
+    reason: CompactionReason = "threshold",
+    willRetry = reason === "overflow",
   ): Promise<void> {
     const error = outcome.error === undefined ? undefined : asError(outcome.error);
     const details = error instanceof CompactionError ? error.details : undefined;
@@ -226,6 +365,7 @@ export class Compactor {
       ok: outcome.ok,
       phase: outcome.phase,
       reason,
+      willRetry,
       sessionId: ctx.sessionManager.getSessionId(),
       sessionFile: ctx.sessionManager.getSessionFile(),
       cwd: ctx.cwd,
@@ -317,7 +457,8 @@ export class Compactor {
   }
   stop(): void {
     this.active = false;
-    this.overflowEntryId = undefined;
+    this.routed = undefined;
+    this.overflow = undefined;
     this.detachGate?.(); this.detachGate = undefined;
     for (const unsubscribe of this.listeners.splice(0)) unsubscribe();
     if (this.context?.mode === "tui") this.context.ui.setStatus("compactor", undefined);
